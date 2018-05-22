@@ -1,0 +1,1017 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Setup (for both the fire detections and the climate data)
+Read in the necessary libraries, and make a mini-function to read in the dates as actual dates. 
+```{r}
+# load libraries (and install the package if you don't already have it)
+## for the fire detections
+if (!require("sp")) {
+     install.packages("sp")
+     library(sp) }
+
+## for the fire detections
+if (!require("GISTools")) {
+     install.packages("GISTools")
+     library(GISTools) }
+
+## for the fire detections
+if (!require("rgdal")) {
+     install.packages("rgdal")
+     library(rgdal) }
+
+## for the climate data
+if (!require("plyr")) {
+     install.packages("plyr")
+     library(plyr) } 
+
+## for the climate data
+if (!require("zoo")) {
+     install.packages("zoo")
+     library(zoo) }
+
+## create a mini function that makes the date of the detected fire be read in as a POSIXct date, rather than as a character or a string
+setClass('yyyymmdd')
+setAs("character","yyyymmdd", function(from) as.Date(from, format="%Y%m%d"))
+
+# and another one that we'll use for the climate data
+## note that because this data is from Indonesia, the day comes before the month
+setClass('ddmmyyyy')
+setAs("character","ddmmyyyy", function(from) as.Date(from, format="%d/%m/%Y",tz="UTC+7"))    # also sets the time zone; really just needed so we don't get an error because all of this data is from the same spot
+```
+
+Read in a very rough shapefile with the boundaries of the countries, and then extract the three countries that make up Borneo. (We don't need a detailed shapefile here, because it is just to give us a very general idea of where we are and to make sure that things are scaling correctly etc.)
+```{r}
+# read in the shapefile
+countries<-readOGR(dsn="/Users/laurenhendricks/Documents/GIS_Data/ne_110m_admin_0_countries/",layer="ne_110m_admin_0_countries")
+
+## NOTE: if we want better looking (i.e., more accurate) country boundaries, use this shapefile instead (and the rest of the code will still work fine)
+#countries_detail<-readOGR(dsn="/Users/laurenhendricks/Documents/GIS_Data/ne_10m_admin_0_map_units/",layer="ne_10m_admin_0_map_units")
+
+# subset out Indonesia, Malaysia, and Brunei -- which gives us all of Borneo plus the surrounding islands and part of SE Asia
+SEAsia<-countries[countries$SOVEREIGNT=="Indonesia"|countries$SOVEREIGNT=="Malaysia"|countries$SOVEREIGNT=="Brunei",]
+#SEAsia_detail<-countries_detail[countries_detail$SOVEREIGNT=="Indonesia"|countries_detail$SOVEREIGNT=="Malaysia"|countries_detail$SOVEREIGNT=="Brunei",]
+
+# plot it to make sure it works properly 
+plot(SEAsia,main="Unprojected")
+
+# reproject it UTM 49 S (CRS from http://spatialreference.org/ref/epsg/23889/)
+SEAsia_proj<-spTransform(SEAsia,"+proj=utm +zone=49 +south +a=6378160 +b=6356774.50408554 +units=m +no_defs")
+#SEAsia_detail_proj<-spTransform(SEAsia_detail,"+proj=utm +zone=49 +south +a=6378160 +b=6356774.50408554 +units=m +no_defs")
+
+
+# plot it again to make sure things still look good
+plot(SEAsia_proj,main="Projected")
+#plot(SEAsia_detail_proj)
+```
+
+We're selecting fire detections based on their distance from the Ketapang airport. So, we need to know where the Ketpang airport is! 
+```{r}
+# create a shapefile with the coordinates of KTG
+KTG<-cbind(109.9619,-1.8166)
+KTG.sp<-SpatialPoints(KTG,proj4string = CRS("+proj=longlat +ellps=WGS84"),bbox=NULL)
+KTG.sp_proj<-spTransform(KTG.sp,"+proj=utm +zone=49 +south +a=6378160 +b=6356774.50408554 +units=m +no_defs")
+
+# plot the airport on top of SE Asia
+plot(SEAsia_proj)
+plot(KTG.sp_proj,add=T,pch=16,col="red")
+```
+
+
+# MODIS Fire Detections
+Below, find the code to extract the fires within a set distance of the Ketapang airport. 
+
+## Extract fires that are roughly within 500 km of the Ketpang airport (the "rough square")
+To start, roughly model the distance around the airport as a square and extract all of the records that are within that square based only on the coordinates. This will give us fewer records of fire detections to sort through in the next step, when we make things spatial. Then, make the detection records spatial, plot them, and extract those that are within a set radius of the airport. 
+
+For a 500 km buffer, the maximum latitudes are approximately 6.5 S and 2.7 N; the maximum longitudes are approximately 105 E and 115 E. This makes a very rough, preliminary version of the "square" file, which has everything within a ~1000kmx1000km square roughly centered on the Ketapang airport. 
+```{r,eval=FALSE}
+path<-"/Volumes/Samsung USB/BORNEO/MODIS/mcd14ml/"     # this is on Lauren's thumb drive. It's ~4GB total and runs through January 2018
+
+# make an empty variable to store the data in
+detections_500km<-data.frame(YYYYMMD=integer(),HHMM=integer(),sat=logical(),lat=numeric(),lon=numeric(),T21=numeric(),T31=numeric(),
+                 sample=integer(),FRP=numeric(),conf=integer(),type=integer())
+
+# list of all of the file names
+file.names <- dir(path, pattern =".txt")
+
+# then the for loop and then also do the subset
+for(i in 1:length(file.names)){
+  file <- read.table(paste(path,file.names[i],sep=""),header=TRUE, sep="")
+  tmp<-subset(file,(file$lat>-6.5 & file$lat<2.7) & (file$lon>105 & file$lon<115))
+  detections_500km<-rbind(detections_500km,tmp)   # note that this is NOT an ideal way to do this, because R has to copy the data frame object every time something is added. but, we don't know the number of rows we'll need in advance so initializing a data frame doesn't work very well. Shoudl check out rbind.fill in plyr.  
+}
+
+# write out the data so we have it and can go from this file in the future
+write.table(detections_500km, file = "/Volumes/Samsung USB/BORNEO/MODIS/mcd14ml_KTG_500km.txt",sep=" ",row.names = FALSE)
+
+# remove the detections object and we'll read it in from the file for future operations
+rm(detections_500km)
+```
+
+## Extract fires that are within 500 km of the Ketapang airport
+To extract the fires within a set distance of the airport, we we need make buffers of varying distances around the Ketapang airport. Remember that gBuffer needs projected data as its input, and that the units of this projection are meters (so we have to give the width of the buffer in meters). Then plot all of the buffers to make sure that the they are correct. 
+
+```{r}
+# buffers of varying distances. projection units are in meters! 
+KTG_buffer5km<-gBuffer(KTG.sp_proj,width=5000,byid=FALSE)
+KTG_buffer50km<-gBuffer(KTG.sp_proj,width=50000,byid=FALSE)
+KTG_buffer250km<-gBuffer(KTG.sp_proj,width=250000,byid=FALSE)
+KTG_buffer500km<-gBuffer(KTG.sp_proj,width=500000,byid=FALSE)
+
+# then plot all of the buffers to make sure that it all works
+plot(SEAsia_proj)
+plot(KTG_buffer500km,add=T,col="grey90")
+plot(KTG_buffer250km,add=T,col="grey70")
+plot(KTG_buffer50km,add=T,col="grey50")
+plot(KTG_buffer5km,add=T,col="grey30")
+plot(KTG.sp_proj,add=T,pch=17,col="red",cex=0.55)         # don't plot Ketapang because at this scale we can't see both the 5km buffer and the point
+```
+Now it's time to start extracting the detections that are within each buffer. 
+
+Read in the "rough square" data to check it out. Then, make it spatial and project it. Then, use the buffers to extract only the things within the desired distances of the airport. Start with the biggest buffer; everything else will be a subset of this file. This means that we'll only need to access all of the original fire detection files once. This only needs to be done ONCE. Don't execute this chunk again! 
+```{r, eval=FALSE}
+# read in the data
+detections_500km_square<-read.table("/Volumes/Samsung USB/BORNEO/MODIS/mcd14ml_KTG_500km.txt",header=T,sep=" ")
+
+# turn the data frame into a spatial points data frame
+detections_500km_square_sp<-SpatialPointsDataFrame(cbind(detections_square_500km$lon,detections_square_500km$lat),detections_square_500km,proj4string = CRS("+proj=longlat +ellps=WGS84"))
+                                          
+# project the data                                          
+detections_500km_square_sp_proj<-spTransform(detections_500km_square_sp,"+proj=utm +zone=49 +south +a=6378160 +b=6356774.50408554 +units=m +no_defs")
+
+# cut out only the things in the buffer
+detections_500km_c<-detections_500km_square_sp_proj[KTG_buffer500km,]
+
+# plot it to check and make sure it worked
+plot(SEAsia_proj)
+plot(detections_500km_c,add=T)
+
+# then write out only the attribute table to a new file
+write.table(detections_500km_c@data, file = "/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/mcd14ml_KTG_500km.txt",sep=" ",row.names = FALSE)
+
+# and print out the number of detections
+print(paste(length(detections_500km_c$YYYYMMDD),"fire detections within a 500km radius of KTG"))
+
+# and remove the data from memory
+rm(detections_500km_square, detections_500km_square_sp, detections_500km_square_sp_proj)
+rm(detections_500km, detections_500km_c,detections_500km_sp)
+```
+
+Read in the detections within 500 km of KTG. This is the data that we extracted in the previous chunk. 
+```{r} 
+detections_500km_df<-read.table("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/mcd14ml_KTG_500km.txt",sep=" ",header = T,colClasses = c("yyyymmdd","character","factor",rep("numeric",4),"integer","numeric","integer","factor"))
+
+# pull out only the year. Note that this way of doing it gets teh year as a character (so it's no longer a real date) but this makes it possible for use to make a better histogram
+detections_500km_df$year<-format(detections_500km_df$YYYYMMDD,"%Y")
+
+# also pull out only the month. same note as above
+detections_500km_df$month<-format(detections_500km_df$YYYYMMDD,"%m")
+
+
+# make it spatial
+detections_500km<-SpatialPointsDataFrame(cbind(detections_500km_df$lon,detections_500km_df$lat),detections_500km_df,proj4string = CRS("+proj=longlat +ellps=WGS84"))
+                                          
+# project the data                                          
+detections_500km<-spTransform(detections_500km,"+proj=utm +zone=49 +south +a=6378160 +b=6356774.50408554 +units=m +no_defs")
+
+# then plot it
+plot(SEAsia_proj,main="MODIS Fire Detections within 500km of KTG")
+plot(detections_500km,add=T,cex=0.25)
+```
+
+
+Then, to go to smaller and smaller distances from the airport, we can just pull things out of the 500km file instead of having to loop through everything again. 
+```{r}
+# cut out only the things in the 250 km buffer
+detections_250km<-detections_500km[KTG_buffer250km,]
+
+# plot it to check and make sure it worked
+plot(SEAsia_proj,main="MODIS Fire Detections within 250km of KTG")
+plot(detections_250km,add=T,cex=0.25)
+
+# then write out only the attribute table to a new file
+#write.table(detections_250km@data, file = "/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/mcd14ml_KTG_250km.txt",sep=" ",row.names = FALSE)
+```
+
+```{r}
+# subset out things within 50 km of KTG
+detections_50km<-detections_500km[KTG_buffer50km,]
+
+# plot it to check and make sure it worked
+plot(SEAsia_proj,main="MODIS Fire Detections within 50km of KTG")
+plot(detections_50km,add=T,cex=0.25)
+
+# then write out only the attribute table to a new file
+#write.table(detections_50km@data, file = "/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/mcd14ml_KTG_50km.txt",sep=" ",row.names = FALSE)
+```
+
+```{r}
+# subset out things within 5 km of KTG
+detections_5km<-detections_500km[KTG_buffer5km,]
+
+# plot it to check and make sure it worked
+plot(SEAsia_proj,main="MODIS Fire Detections within 5km of KTG")
+plot(detections_5km,add=T,cex=0.25)
+
+# then write out only the attribute table to a new file
+#write.table(detections_5km_c@data, file = "/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/mcd14ml_KTG_5km.txt",sep=" ",row.names = FALSE)
+```
+
+Print a summary of how many detections there are within each set distance of the Ketapang airport. 
+```{r}
+print(paste(length(detections_500km$YYYYMMDD),"fire detections within a 500km radius of KTG"))
+print(paste(length(detections_250km$YYYYMMDD),"fire detections within a 250km radius of KTG"))
+print(paste(length(detections_50km$YYYYMMDD),"fire detections within a 50km radius of KTG"))
+print(paste(length(detections_5km$YYYYMMDD),"fire detections within a 5km radius of KTG"))
+
+```
+
+
+Now clean things up, because we have all of the things we need. 
+```{r}
+rm(KTG_buffer500km,KTG_buffer250km,KTG_buffer50km,KTG_buffer5km)
+rm(KTG,KTG.sp,SEAsia)    # we only want projected things to plot so we can remove all of these
+```
+
+# Now start to do some data exploration!
+We can look at the number of fires per day by summing by day using the count() function from plyr. 
+```{r}
+######## 500 km
+# use count (from the plyr package) to see how many ignitions there are on a given day
+dailyIgnitions_500km<-count(detections_500km_df,vars="YYYYMMDD")
+colnames(dailyIgnitions_500km)<-c("Date","Total_Ignitions")
+# this runs pretty quickly!!! 
+
+# look at this graphically
+plot(dailyIgnitions_500km$Date,dailyIgnitions_500km$Total_Ignitions,type="h",xlab="Date",ylab="Number of Ignitions",main="Ignitions by day, 500 km radius")
+
+# also do it by month
+monthlyIgnitions_500km<-count(detections_500km_df,vars=c("year","month"))
+#monthlyIgnitions_500km$YearMonth<-NA # not sure why but for some reason it is making this happen first
+monthlyIgnitions_500km$YearMonth<-paste(monthlyIgnitions_500km$year,monthlyIgnitions_500km$month,sep="-")
+
+# change the column names
+colnames(monthlyIgnitions_500km)<-c("Year","Month","Total_Ignitions","YearMonth")
+
+# look at this graphically
+plot(monthlyIgnitions_500km$Total_Ignitions,type="h",xlab="Date",ylab="Number of Ignitions",main="Ignitions by Month, 500 km radius",xaxt="n")
+axis(side=1,at=seq(from=3,to=length(monthlyIgnitions_500km$YearMonth),by=12),labels = 2001:2017,cex=0.5)    # starts at 3 because the first two are 2000
+# plot as high density vertical lines because it's a little misleading to plot it as regular lines
+
+```
+So this would have been another way to do the next chunk of things, where we make barplots... but 
+
+Look at the distribution of fires over time. 
+```{r}
+# doing it this way instead of using the histogram function to make slightly prettier barplot
+
+# 500 km
+# by month
+barplot(table(detections_500km_df$month),main="Number of Fire Detections within 500 km of Ketapang",xlab="Month",ylab="",las=1)
+
+# by year
+barplot(table(detections_500km_df$year),main="Number of Fire Detections within 500 km of Ketapang",xlab="Year",ylab="",las=2)
+
+# can we do it by both? 
+
+```
+When we look at the number of fire detections by month, it's clear that there is a "fire season" from August through October (with a bit of a ramp up period in July). 
+
+
+We can also look at the number of fires detected over time in smaller areas around Ketapang. 
+```{r}
+# 250 km
+barplot(table(detections_250km$year),main="Number of Fire Detections within 250 km of Ketapang",xlab="Year",ylab="",las=2)
+
+# 50 km
+barplot(table(detections_50km$year),main="Number of Fire Detections within 50 km of Ketapang",xlab="Year",ylab="",las=2)
+
+# 5 km
+barplot(table(detections_5km$year),main="Number of Fire Detections within 5 km of Ketapang",xlab="Year",ylab="",las=2)
+```
+For 250 km and 50 km from Ketapang, the pattern is generally the same as for 500 km (not terribly surprising since it's just a subset of the 500 km data set).
+
+
+Since there is such extreme annual variability in the number of fires detected and fire in this part of the world is most often attributed to El Nino related drought, it's interesting to look at a measure of ENSO in comparison to fire detections. The Multivariate ENSO Index (MEI) is a good place to start; it combines six variables (sea-level pressure (P), zonal (U) and meridional (V) components of the surface wind, sea surface temperature (S), surface air temperature (A), and total cloudiness fraction of the sky (C)) to quantify the departure from normal. Here's the description of how the MEI is calculated from NOAA (https://www.esrl.noaa.gov/psd/MEI/mei/): 
+
+>El Niño/Southern Oscillation (ENSO) is the most important coupled ocean-atmosphere phenomenon to cause global climate variability on interannual time scales. Here we attempt to monitor ENSO by basing the Multivariate ENSO Index (MEI) on the six main observed variables over the tropical Pacific. These six variables are: sea-level pressure (P), zonal (U) and meridional (V) components of the surface wind, sea surface temperature (S), surface air temperature (A), and total cloudiness fraction of the sky (C). These observations have been collected and published in ICOADS for many years. The MEI is computed separately for each of twelve sliding bi-monthly seasons (Dec/Jan, Jan/Feb,..., Nov/Dec). After spatially filtering the individual fields into clusters (Wolter, 1987), the MEI is calculated as the first unrotated Principal Component (PC) of all six observed fields combined. This is accomplished by normalizing the total variance of each field first, and then performing the extraction of the first PC on the co-variance matrix of the combined fields (Wolter and Timlin, 1993). In order to keep the MEI comparable, all seasonal values are standardized with respect to each season and to the 1950-93 reference period.
+
+The MEI data can be found linked at the end of that page, or at this link: https://www.esrl.noaa.gov/psd/enso/mei/table.html. It shows bimonthly values from 1950 to present (table is updated approximately monthly).
+```{r}
+# read in the MEI data
+MEI<-read.csv("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/MEIdata.txt",header=F,sep="\t")[-1,]   # don't read in the first row; it's the month names and the separators aren't correct
+
+# assign column header names to label the meaurement
+months<-c("Year","Dec-Jan","Jan-Feb","Feb-Mar","Mar-Apr","Apr-May","May-Jun","Jun-Jul","Jul-Aug","Aug-Sep","Sep-Oct","Oct-Nov","Nov-Dec")
+colnames(MEI)<-months
+
+# convert it to a single list so we can plot it (i.e., all of the index values are in the same column)
+# this unwraps things row by row
+MEI_list<-c(t(MEI[,-1]))
+
+# to help make the code more flexible for the future
+endYear<-2018  # NOTE THAT THIS WILL NEED TO BE ADJUSTED TO THE TIME FRAME USED
+numYears<-length(seq(1950,endYear,1))
+
+# this will help us keep track of which each observation is
+years<-c(rep(1950:endYear,each=12))
+month_num<-c(rep(1:12,numYears))    
+days_fake<-c(rep(1,numYears*12)) # give it a fake day as the first of the month so we can convert to dates. 
+
+# then make a matrix that has all of the data in it. 
+MEI_reshaped<-cbind.data.frame(years,month_num,days_fake,MEI_list)
+
+# this removes the last two values, because they have not yet been measured and are listed as -999 in the data. 
+# NOTE THAT UPDATED VERSIONS OF THE DATA SET WILL HAVE FEWER NO DATA VALUES, OR WILL HAVE SIMPLY LEFT THOSE DATES BLANK. THE CODE WILL NEED TO BE ADJUSTED ACCORDINGLY.
+#MEI_reshaped<-MEI_reshaped[-(c(length(MEI_reshaped$years),length(MEI_reshaped$years)-1)),]
+
+# convert the dates into actual dates
+MEI_reshaped$date<-as.Date(paste(MEI_reshaped$years,MEI_reshaped$month_num,MEI_reshaped$days_fake,sep="-"))
+
+# remove the NA values at the end by removing all entries without complete cases (works because there are only NAs for future months)
+MEI_reshaped<-MEI_reshaped[complete.cases(MEI_reshaped),]
+
+
+# also make a version that is just 2000 through 2017
+MEI_reshaped_2000to2017<-MEI_reshaped[(MEI_reshaped$years>=2000 & MEI_reshaped$years<=2017),]
+```
+
+Then plot the data! 
+```{r}
+# then plot the data! 
+plot(MEI_reshaped$MEI_list~MEI_reshaped$date,type="l",xlab="Year",ylab="Standardized Departure")
+abline(h=0,col="grey")
+
+# then plot it
+plot(MEI_reshaped_2000to2017$MEI_list~MEI_reshaped_2000to2017$date,type="l",xlab="Year",ylab="Standardized Departure")
+abline(h=0,col="grey")
+```
+
+We can also visualize this in a different way, where the graph is colored according to whether the MEI index is positive or negative. We do this using the *polygon()* function, with a separate polygon created for the negative values and the positive values.  
+```{r,eval=FALSE}
+# also create a version where it is colored red when the MEI value is positive and blue when the MEI value is negative
+# to do this using polygon, we need to have two separate polygons. 
+
+# One with the positive values 
+MEI_pos<-MEI_reshaped
+MEI_pos$MEI_list[MEI_pos$MEI_list<=0]<-0 # make any negative value 0 for the visualization
+# One with the negative values
+MEI_neg<-MEI_reshaped
+MEI_neg$MEI_list[MEI_neg$MEI_list>=0]<-0
+MEI_neg2<-rbind(data.frame(years=1949,month_num=12,days_fake=as.numeric(1),MEI_list=as.numeric(0),date=as.Date("1949-12-1")),MEI_neg)   # because the first and last entries are negative, we need to add fake first and last entries that are 0. Otherwise, the plotting doesn't work. 
+# THIS IS SOMETHING THAT WILL NEED TO BE ADJUSTED AS MORE DATA IS ADDED
+MEI_neg2<-rbind(MEI_neg2,data.frame(years=2018,month_num=3,days_fake=as.numeric(1),MEI_list=as.numeric(0),date=as.Date("2018-4-1")))
+
+# then plot it! 
+plot(MEI_pos$MEI_list~MEI_pos$date,type="l",ylim=c(-3,3),lwd=0.25,xlab="Year",ylab="Standardized Departure",xaxt="n")
+polygon(y=MEI_pos$MEI_list,x=MEI_pos$date,col="red")
+axis.Date(side=1,MEI_pos$date, format="%Y",at=seq.Date(as.Date("1950/1/1"),by="5 years",length.out=14),las=2)
+par(new=T)
+plot(MEI_neg2$MEI_list~MEI_neg2$date,type="l",ylim=c(-3,3),lwd=0.25,xlab="",ylab="",xaxt="n")
+polygon(y=MEI_neg2$MEI_list,x=MEI_neg2$date,col="blue")
+```
+
+Plot the MEI for only the years 2000-2017 (to match the data from Ketapang)
+```{r}
+# One with the positive values 
+MEI_pos<-MEI_reshaped_2000to2017
+MEI_pos$MEI_list[MEI_pos$MEI_list<=0]<-0 # make any negative value 0 for the visualization
+
+# One with the negative values
+MEI_neg<-MEI_reshaped_2000to2017
+MEI_neg$MEI_list[MEI_neg$MEI_list>=0]<-0
+MEI_neg2<-rbind(data.frame(years=1999,month_num=12,days_fake=as.numeric(1),MEI_list=as.numeric(0),date=as.Date("1999-12-1")),MEI_neg)   # because the first and last entries are negative, we need to add fake first and last entries that are 0. Otherwise, the plotting doesn't work. 
+# THIS IS SOMETHING THAT WILL NEED TO BE ADJUSTED AS MORE DATA IS ADDED
+MEI_neg2<-rbind(MEI_neg2,data.frame(years=2018,month_num=1,days_fake=as.numeric(1),MEI_list=as.numeric(0),date=as.Date("2018-1-1")))
+
+# then plot it! 
+plot(MEI_pos$MEI_list~MEI_pos$date,type="l",ylim=c(-3,3),lwd=0.25,xlab="Year",ylab="Standardized Departure",xaxt="n")
+polygon(y=MEI_pos$MEI_list,x=MEI_pos$date,col="red")
+axis.Date(side=1,MEI_pos$date, format="%Y",at=seq.Date(as.Date("1950/1/1"),by="5 years",length.out=14),las=2)
+par(new=T)
+plot(MEI_neg2$MEI_list~MEI_neg2$date,type="l",ylim=c(-3,3),lwd=0.25,xlab="",ylab="",xaxt="n")
+polygon(y=MEI_neg2$MEI_list,x=MEI_neg2$date,col="blue")
+```
+
+can we plot these together? 
+```{r}
+# 500 km
+#table(detections_500km_df$year)
+barplot(table(detections_500km_df$year),border=F,las=2)
+
+plot(table(detections_500km_df$year),type="l",las=2)
+
+```
+So, when we look at the MEI as an indicator of El Nino/La Nina conditions paired with the number of fire detections (for now on an annual basis--later we should make these into line graphs?)
+
+
+We can also look at the different types of fires that have been detected. The categories are:
+0 = presumed vegetation fire  
+1 = active volcano  
+2 = other static land source  
+3 = offshore  
+```{r}
+table(detections_500km_df$type)
+```
+This tells us that the vast majority (97.7%) of these detections are probably vegetation fires. A small number are classified as "other static land source"--which could be a variety of things--and an almost negligbly small number is from offshore sources (probably natural gas flares).
+
+# The climate data
+The evaoptranspiration function (code from Dan). 
+```{r}
+dailyET0 <- function(lat,elev,psun,wind,doy,tmax,tmin,rh){
+	# This is a ET0 function designed for daily inputs.  
+  
+  # Arguments:
+  # psun: vector of daily percent sunshine
+  # tmax, tmin: vectors of monthly average maximum and minimum temperatures in C, 
+  # wind: vector of monthly average wind speed in m/s, 
+  # tmean_prev: vector of mean temp for the previous month, 
+  # lat: vector of latitude in degrees 
+  # elev: vector of elevation in meters, 
+  # rh: vector of relative humidity (mean daily).
+  # tmean_prev: vector of mean temp of previous month in C
+  # albedo: scaler or vector of albedo values, 
+  # doy: scalar day of year 1-365,
+  # Value: 
+  # Returns a vector of ET0 values.
+  
+#some constants
+n_days = 1
+GSC = 0.082      # MJ/m2/min (solar constant)
+albedo = 0.23 #(hypothetical grass reference crop)
+G <- 0 # assume soil heat flux to be zero
+hw=5 # height at which wind is measured
+cp <- 1.013*10^-3 # specific heat of air
+
+# Step 1	
+  tmean <- (tmin+tmax)/2
+  lambda <- 2.501-2.361e-3*tmean # latent heat of vaporization    
+
+# Step 2: Mean daily solar radiation (Rs in units MJ/m2/day). See Step 12.  Nothing needed here.
+
+# Step 3: wind adjustment to 2m from 10m measurements
+  wind <- wind*(4.87/log(67*hw-5.42))  
+  
+# Step 10: Mean saturation vapor pressure (es)
+	es <- 0.6108*exp(tmin*17.27/(tmin+237.3))/2+0.6108*exp(tmax*17.27/(tmax+237.3))/2  # saturation vapor pressure
+# Step 4: Slope of the saturation vapor pressure vs. air temperature curve (delta)
+  	delta <- (4098 * es)/(tmean + 237.3)^2  
+
+# Step 5: Atmospheric Pressure (P)
+	P <- 101.3*((293-0.0065*elev)/293)^5.26  # Barometric pressure in kPa
+
+# Step 6: Psychrometric constant (gamma)
+	gmma <- cp*P/(0.622*lambda) # Psychrometer constant (kPa C-1)
+
+#Step 7: Delta Term (dt) (auxiliary calculation for Radiation Term)
+	dt <- delta/(delta+gmma*(1+0.34*wind))
+
+# Step 8: Psi Term (pt) auxiliary calculation for Wind Term.
+	pt <- gmma/(delta+gmma*(1+0.34*wind))
+	
+# Step 9: Temperature Term (auxiliary calculation for Wind Term)
+	tt <- (900/(tmean+273))*wind
+
+# Step 11: actual vapor pressure (ea)
+	ea <- (rh/100)*(0.6108*exp(tmin*17.27/(tmin+237.3))+0.6108*exp(tmax*17.27/(tmax+237.3)))/2
+	vpd <- es - ea
+	vpd[vpd<0] <- 0    
+
+# Step 12: The inverse relative distance Earth-Sun (dr) and solar declination (delt)
+	# Calculate potential max solar radiation or clear sky radiation.
+	dr <- 1+0.033*cos(2*pi/365*doy)      
+	delt <- 0.409*sin(2*pi/365*doy-1.39)
+
+# Step 13: Convert latitude to radians (phi)
+	phi <- pi*lat/180 
+
+# Step 14: Sunset hour angle (ws)
+	omegas <- acos(-tan(phi)*tan(delt))
+
+# Step 15: Daily extraterrestrial radiation (Ra)
+	Ra <- 24*60/pi*GSC*dr*(omegas*sin(phi)*sin(delt) +cos(phi)*cos(delt)*sin(omegas))
+
+# Step 16: Clear sky solar radiation (Rso). Rs is fraction of Rso
+	Rso <- Ra*(0.75+2e-5*elev)     #For a cloudless day, Rs is roughly 75% of extraterrestrial radiation (Ra)
+	# radfraction is a measure of relative shortwave radiation, needs to be less than 1
+	radfraction <- psun
+	radfraction[radfraction>1] <- 1
+	Rs<-Rso*radfraction
+
+# Step 17: Net solar or net shortwave radiation (Rns).  
+	Rns  <- (1-albedo)*Rs
+
+# Step 18: Net outgoing longwave solar radiation (Rnl)
+	Rnl <- 4.903e-9*n_days*((tmax+273.15)^4+(tmin+273.15)^4)/2*(.34-.14*sqrt(ea))*(1.35*radfraction-.35)     
+
+# Step 19: Net radiation (Rn)
+	Rn <- Rns*n_days-Rnl     
+
+# Final step
+# Radiation term.  (0.408*Rn) is net radiation expressed in equivalent of evaporation (mm)	
+	ETrad <- dt*0.408*Rn
+# Wind term (ETwind)	
+	ETwind <- pt * tt*(es-ea)
+
+et0 <- ETwind + ETrad
+
+return(data.frame(ETwind=ETwind,ETrad=ETrad,et0=et0))
+}
+```
+
+
+The soil water balance function (code from Dan). This is based on this website's calculator: http://geog.uoregon.edu/envchange/software/AETcalculator.pdf. 
+```{r}
+aetmod <- function(et0,precip,awc){
+  # This function computes AET given ET0, H2O input, soil water capacity, and beginning-of-month soil moisture
+  # Arguments:
+  # et0: vector of monthly reference evapotranspiration in mm
+  # input: vector of monthly water input to soil in mm
+  # awc: single value for soil water capacity in mm
+  #
+  # Value:
+  # returns a data frame with columns for AET, deficit, soil water content, and runoff.
+  
+  N <- length(et0)
+  runoff <- def <- aet <- soil <- rep(NA,N) 
+  w.previous <- awc  #start with at capacity
+  
+  for(i in 1:N){
+  	beta <- (w.previous/awc)/.7  ###  beta function (declining availability function)
+	if(beta>1){
+		beta <- 1
+		} else {
+		beta <- 1-exp(-6.68*w.previous/awc)
+		}
+	if(beta<0){ beta <-0 }
+  	Dd <- precip[i]-et0[i] # positive=excess H2O, negative=H2O deficit
+  	if(!is.na(Dd)){
+  		if(Dd<0){ # precip less than demand, lowered soil water, no runoff
+			soil[i] <- w.previous+beta*Dd  ### soil moisture at end of day i
+			runoff[i] <- 0
+			aet[i] <- precip[i]+(w.previous-soil[i])  # aet=precip+lowered soil water
+			def[i] <- et0[i]-aet[i]
+			}
+		if(Dd>0){  # precip more than demand, increased soil water, possibly runoff
+			soil[i] <- w.previous+Dd  ### soil moisture at end of day i
+			if(soil[i]>awc){
+				runoff[i] <- soil[i]-awc
+				soil[i] <- awc
+				} else {
+				runoff[i] <- 0
+				}
+			aet[i] <- et0[i]
+			def[i] <- 0
+			}		
+		w.previous <- soil[i]
+		} #endif
+	} # next day
+	return(data.frame(aet=aet,def=def,runoff=runoff,soil=soil))
+  }
+```
+
+
+##  Initial data exploration
+
+We need to read in the climate data from Ketapang, and perform a couple of calculations to get everything into the right units and format. 
+```{r}
+# read in the Ketapang climate data
+## no data is given the value 9999 in the original data; na.strings converts indicated values to NA (which is what R uses to indicate no data) without any extra steps
+## 9999 is no data
+## 8888 is no measurable data. not sure how this is different than no data... maybe these should actually be 0?
+KTG<-read.csv("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/KetapangClimate1986_2016 COPY.csv",header=T,sep=",",na.strings=c("9999","8888"),colClasses = c("character","factor","ddmmyyyy",rep("numeric",7),"factor","numeric","factor") )
+
+# rename the columns into english
+colnames(KTG)<-c("station","stationID","date","T_min","T_max","T_avg","humidity","precip","sunshine","wind_speed_knots","wind_dir","wind_maxgust_knots","wind_maxgust_dir")
+
+head(KTG)
+```
+
+
+We already have:
+* Maximum temperature in Celsisus;
+* Minimum temperature in Celsius; and
+* Humidity (assuming it is relative humidity).
+
+(Also latitude and elevation of the recording site.)
+
+We also have:
+* Wind speed, but it needs to be converted from knots to meters per second;
+* Date, which needs to be converted to the day of the year (aka Julian date); and
+* Hours of sunshine, which needs to be converted to a percentage. 
+
+But first, some quick data exploration. 
+```{r}
+# look at the sunshine data  
+boxplot(KTG$sunshine,main="Hours of Sunshine")
+
+# look at the temperature data  
+boxplot(KTG$T_min,main="Minimum Temperature")
+boxplot(KTG$T_max,main="Maximum Temperature")
+boxplot(KTG$T_avg,main="Average Temperature")
+
+# look at the humidity data
+boxplot(KTG$humidity,main="Relative Humidity")
+
+# precip data
+boxplot(KTG$precip,main="Daily Precipitation")
+
+# wind data
+boxplot(KTG$wind_speed_knots,main="Wind Speed")
+```
+Looks like the data is definitely not normally distributed for most of these variables, but since we're not trying to do any statistical analyses on these it shouldn't be a problem. We also need to note that there are some clear problems in the data. 
+
+## Dealing with NAs and other non-sensical values
+There also seem to be some issues with the precipitation data--there is a LOT of probably missing data--but those are even harder to track down, so just read them in as 0 for now. 
+
+Another thing that might need to be dealt with has to do with the windspeed. Windspeed varies with height, so we need to find out the height that the measurement was taken at. There are also a lot of missing values. 
+
+Calculate a moving average that we can then use to fill in some of the missing values. This isn't the ideal approach, but we have to have some value--otherwise the AET for that day will be modeled as 0, which is even less realistic than filling it in with modeled/smoothed data. (Note that for some things, like temperature, a moving average does seem reasonable, but it makes less sense for other things, like wind and precipitation.)
+```{r}
+# first count the number of NAs in the columns to identify which need to have a moving average applied
+print(paste(sum(is.na(KTG$T_min)),"NAs in T_min"))
+print(paste(sum(is.na(KTG$T_max)),"NAs in T_max"))
+print(paste(sum(is.na(KTG$T_avg)),"NAs in T_avg"))
+print(paste(sum(is.na(KTG$humidity)),"NAs in humidity"))
+print(paste(sum(is.na(KTG$precip)),"NAs in precip"))
+print(paste(sum(is.na(KTG$sunshine)),"NAs in sunshine hours"))
+print(paste(sum(is.na(KTG$wind_speed_knots)),"NAs in wind speed"))
+# not checking for wind/gust direction because we're not using that anywhere
+```
+So, looks like we need to use the moving average for every variable of interest, though there are A LOT more missing values for wind than for any of the other measurements.
+
+So, we can use a moving average (mean) to fill in the missing values. Use rollapply() from the zoo package. 
+[Could also check out na.approx() or na.spline() in the zoo package, which could be an interesting comparison. Though, with some initial testing, it seems like it's not flexible enough? It has issues with NA values. We could also try na.aggregate() which replaces NAs with aggregated values, so we could replace NAs with something like a monthly mean. This is probably not better than a moving average. Yet another option is given by na.locf() which fills in the NAs with the last non-NA value.] 
+```{r}
+# make a data frame to store the rolling means in
+# also have the original data in there NEXT TO THE ROLLING MEAN so it's easier to compare the results
+KTG_rollmeans<-data.frame(matrix(nrow=length(KTG$date),ncol=1+(7*2)))    # same number of rows as original, and then 2 columns for each of the 7 variables and have a column for the date
+
+# add in the dates
+KTG_rollmeans[,1]<-KTG$date
+
+# set the window
+window<-10    
+KTG_rollmeans[,2]<-KTG$T_min
+KTG_rollmeans[,3]<-rollapply(KTG$T_min,window,FUN=mean,fill=NA,partial=1,na.rm=T)
+KTG_rollmeans[,4]<-KTG$T_max
+KTG_rollmeans[,5]<-rollapply(KTG$T_max,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
+KTG_rollmeans[,6]<-KTG$T_avg
+KTG_rollmeans[,7]<-rollapply(KTG$T_avg,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
+KTG_rollmeans[,8]<-KTG$humidity
+KTG_rollmeans[,9]<-rollapply(KTG$humidity,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
+KTG_rollmeans[,10]<-KTG$precip
+KTG_rollmeans[,11]<-rollapply(KTG$precip,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
+KTG_rollmeans[,12]<-KTG$sunshine
+KTG_rollmeans[,13]<-rollapply(KTG$sunshine,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
+KTG_rollmeans[,14]<-KTG$wind_speed_knots
+KTG_rollmeans[,15]<-rollapply(KTG$wind_speed_knots,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
+
+# rename the columns
+# will be combo of original names plus noting that it's a rolling mean
+names_og<-colnames(KTG)[-(c(1,2,3,11,12,13))]     # get the original names but don't need first two columns (station name & id) or the columns with wind directions. don't need date either because we don't want to append roll mean to that
+# also not going to use wind gusts so don't include that
+names_new<-paste(names_og,"rollmean10",sep="_")   # add rolling mean to the names
+
+# now a for loop to combine the original and new names in the correct order
+names_rollmeans<-NA      # where the new names will be stored
+i<-1      # counter that keeps track of which index in the new combined names vector we are at
+
+for(col in 1:length(names_new)){   # col keeps track of index in the vectors we're pulling from 
+    names_rollmeans[i]<-names_og[col]
+    i<-i+1
+    names_rollmeans[i]<-names_new[col]
+    i<-i+1
+}
+
+# add date at the beginning
+names_rollmeans<-c("date",names_rollmeans)
+
+# now rename the columns
+colnames(KTG_rollmeans)<-names_rollmeans
+
+# print the new number of NAs (though they're acutally NaNs, not NAs, because that is what rollsum() puts out.)
+print(paste(sum(is.na(KTG_rollmeans$T_min_rollmean10)),"NAs in T_min_rollmean10"))
+print(paste(sum(is.na(KTG_rollmeans$T_max_rollmean10)),"NAs in T_max_rollmean10"))
+print(paste(sum(is.na(KTG_rollmeans$T_avg_rollmean10)),"NAs in T_avg_rollmean10"))
+print(paste(sum(is.na(KTG_rollmeans$humidity_rollmean10)),"NAs in humidity_rollmean10"))
+print(paste(sum(is.na(KTG_rollmeans$precip_rollmean10)),"NAs in precip_rollmean10"))
+print(paste(sum(is.na(KTG_rollmeans$sunshine_rollmean10)),"NAs in sunshine_rollmean10"))
+print(paste(sum(is.na(KTG_rollmeans$wind_speed_knots_rollmean10)),"NAs in windspeed_rollmean10"))
+# not checking for wind/gust direction because we're not using that anywhere
+```
+*NOTE:* There seem to be a few periods where the entire weather station must have been down, because there are no values at all for any of the measurements for those days. Even roll sum can't deal with that.... unless we use a huge window. Those time periods are: July 2000 and September 1997 (the whole months). To fill all those in, the window would need to be over 30 days... and that's probably too big! So for the 20 and 21 days in the middle of the month we don't have any values (because the first and last 5 do have numbers, pulled in from the previous and following months by the roll apply function). Plus, there are several 10+ day periods where no wind measurements were taken: Jan 11-21 1991, April 2-13 1991, April 28-May 8 1991, and Nov 27-Dec 6 1992. (Also note that there are a lot of missing values on either side of those periods, too, but there is at least 1 measurement for every 10 apart from those chunks.) Weirdly, in a lot of these periods, there IS precipitation data but the values are all 0. (So maybe this isn't accurate data? Checked in the raw data and they really are 0s, not 8888/9999s.) And the 44 NAs/NaNs for precip are in 2015, not in those other long stretches--it's basically the second half of 2015, with a few days here and there where there is data so it isn't fully NaNs. Sooo...don't use those chunks of data! 
+
+
+So, there are some limitations even after filling in the missing values with moving averages... but we have to go ahead and fill in those values anyways.
+```{r}
+# now make the replacements! 
+# figured out how to do this with the toy data in /Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/code/SandboxCode/FillMissingValues.R
+KTG$T_min[is.na(KTG$T_min)]<-KTG_rollmeans$T_min_rollmean10[is.na(KTG$T_min)]
+KTG$T_max[is.na(KTG$T_max)]<-KTG_rollmeans$T_max_rollmean10[is.na(KTG$T_max)]
+KTG$T_avg[is.na(KTG$T_avg)]<-KTG_rollmeans$T_avg_rollmean10[is.na(KTG$T_avg)]
+KTG$precip[is.na(KTG$precip)]<-KTG_rollmeans$precip_rollmean10[is.na(KTG$precip)]
+KTG$humidity[is.na(KTG$humidity)]<-KTG_rollmeans$humidity_rollmean10[is.na(KTG$humidity)]
+KTG$sunshine[is.na(KTG$sunshine)]<-KTG_rollmeans$sunshine_rollmean10[is.na(KTG$sunshine)]
+KTG$wind_speed_knots[is.na(KTG$wind_speed_knots)]<-KTG_rollmeans$wind_speed_knots_rollmean10[is.na(KTG$wind_speed_knots)]
+
+# also add in a column that flags where there are NAs filled in with another value in at least one of the other columns
+KTG$flag<-NA
+KTG$flag[is.na(KTG$T_min)]<-"One or more estimated values"
+KTG$flag[is.na(KTG$T_max)]<-"One or more estimated values"
+KTG$flag[is.na(KTG$T_avg)]<-"One or more estimated values"
+KTG$flag[is.na(KTG$precip)]<-"One or more estimated values"
+KTG$flag[is.na(KTG$humidity)]<-"One or more estimated values"
+KTG$flag[is.na(KTG$sunshine)]<-"One or more estimated values"
+KTG$flag[is.na(KTG$wind_speed_knots)]<-"One or more estimated values"
+
+```
+
+Now check to see if we have the NAs filled in. 
+```{r}
+# check to see if the number of filled in NAs is less than before
+# (ideally it would be 0 but because of the issue noted earlier about the 10+ day stretches of no values we won't ever see 0)
+print(paste(sum(is.na(KTG$T_min)),"NAs in T_min"))
+print(paste(sum(is.na(KTG$T_max)),"NAs in T_max"))
+print(paste(sum(is.na(KTG$T_avg)),"NAs in T_avg"))
+print(paste(sum(is.na(KTG$humidity)),"NAs in humidity"))
+print(paste(sum(is.na(KTG$precip)),"NAs in precip"))
+print(paste(sum(is.na(KTG$sunshine)),"NAs in sunshine hours"))
+print(paste(sum(is.na(KTG$wind_speed_knots)),"NAs in wind speed"))
+```
+
+So, it's not perfect but it IS better than the original data! However, because the aet function takes values from previous day(s) into account, we can't have any NA values at all. So, we have to cut down to only the time periods that we know are good before calculating the aet. Let's take November 2001 through February 2015. 
+```{r}
+KTG_00to15<-KTG[(KTG$date>=as.Date("01/11/2000", format="%d/%m/%Y",tz="UTC+7") & KTG$date<as.Date("03/01/2015", format="%d/%m/%Y",tz="UTC+7")),]
+```
+
+And check to make sure there aren't any NAs in here.
+```{r}
+# check to see if the number of filled in NAs is less than before
+# (ideally it would be 0 but because of the issue noted earlier about the 10+ day stretches of no values we won't ever see 0)
+print(paste(sum(is.na(KTG_00to15$T_min)),"NAs in T_min"))
+print(paste(sum(is.na(KTG_00to15$T_max)),"NAs in T_max"))
+print(paste(sum(is.na(KTG_00to15$T_avg)),"NAs in T_avg"))
+print(paste(sum(is.na(KTG_00to15$humidity)),"NAs in humidity"))
+print(paste(sum(is.na(KTG_00to15$precip)),"NAs in precip"))
+print(paste(sum(is.na(KTG_00to15$sunshine)),"NAs in sunshine hours"))
+print(paste(sum(is.na(KTG_00to15$wind_speed_knots)),"NAs in wind speed"))
+```
+So now we have a set of data that doesn't have any NA values, and we can proceed and calcluate the aet and soil water balance. 
+
+Now do the same initial data exploration with this data set that is subset of the original set, and has all NA values filled in with a moving average. 
+```{r}
+# look at the sunshine data  
+boxplot(KTG_00to15$sunshine,main="Hours of Sunshine, Nov 2000 through February 2015")
+
+# look at the temperature data  
+boxplot(KTG_00to15$T_min,main="Minimum Temperature, Nov 2000 through February 2015")
+boxplot(KTG_00to15$T_max,main="Maximum Temperature, Nov 2000 through February 2015")
+boxplot(KTG_00to15$T_avg,main="Average Temperature, Nov 2000 through February 2015")
+
+# look at the humidity data
+boxplot(KTG_00to15$humidity,main="Relative Humidity, Nov 2000 through February 2015")
+
+# precip data
+boxplot(KTG_00to15$precip,main="Daily Precipitation, Nov 2000 through February 2015")
+
+# wind data
+boxplot(KTG_00to15$wind_speed_knots,main="Wind Speed, Nov 2000 through February 2015")
+```
+
+
+# Calcluate ET0
+
+For all of these calcuations, assume that: 
+* Airport location is -1.816, 109.963  (1.816 S, 109.963 E)
+* Airport elevation is 14 meters
+
+Useful constants/conversions: 
+* Windspeed in meters per second = 0.5144444 * windspeed in knots
+* 1 KWh=3.6 MJ (for radiation)  aka 1 watt-hour = 3600 joules = .0036 Mjoules
+
+One obvious problem that a moving average can't fix is related to the hours of sunshine. For most days the max reported amount of sun is 8 hours, but this doesn't make sense with what we know about the place, which is that there is ~12 hours of sun possible a day, and it definitely isn't always cloudy for 4 hours every day in Ketapang. Also, there is one day with 13.5 hours of sunshine (18 Oct 2016) and another with 12.5 hours of sunshine (15 Jul 2016). So it seems likely that there are some errors in the data, but we don't know if they are random or systematic (e.g., data entry or a bigger problem in how they are measuring hours of sunshine)! Looking at the raw data, it seems like the 8 hour max issue is probably something with the detector, since ~2015 the numbers start to make more sense; maybe ~2015 they got a better detector?  But, a quick solution that still allows us to use all of the data is to normalize all the sunshine data to a maximum of 8 hours. 
+
+To calculate *solar radiation*, we have information on radiation and hours of sunshine from  NASA Surface Meteorology and Solar Energy (https://eosweb.larc.nasa.gov/cgi-bin/sse/grid.cgi): 
+* The monthly averaged clear sky insolation incident on a horizontal surface (kWh/m2/day) for airport location from 22 year average is: (Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec) = (7.33,7.55,7.51,7.26,6.80,6.50,6.57,6.91,7.28,7.40,7.33,7.20)
+* The monthly averaged daylight hours for airport location from 22 year average is: (Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec) = (12.2,12.1,12.1,12.0,12.0,12.0,12.0,12.0,12.1,12.1,12.2,12.2)
+
+To calculate *dewpoint*, use simplified equation from Lawrence 2005 (may later want to use a more precise equation). This uses relative humidity (so assuming that the values in the spreadsheed are relative, not absolute!) and temperature. The equation is: dewpoint temperature = T - ((100 - relative humdiity)/5). 
+
+```{r}
+###################### Day of year
+# convert the date into the day of the year for the function
+KTG$doy<-as.numeric(strftime(KTG$date, format = "%j"))
+#head(KTG$doy)
+
+
+###################### Windspeed (in knots)
+# note that the wind speed is given in knots and it needs to be converted to m/s
+# windspeed in meters per second = 0.5144444 * windspeed in knots
+KTG$wind_speed_ms<-0.5144444*KTG$wind_speed_knots
+
+###################### Solar radiation
+# calcluate solar radiation from hours of sunshine
+###### treat 8 as the max number of hours in the day and reduce everything that is more than 8 hours down to 8
+KTG$psun<-ifelse(KTG$sunshine<8,(KTG$sunshine/8),1)
+KTG$sunshine_norm<-8*KTG$psun
+###### then to turn it into radiation
+# use the clear sky insolation, hours of daylight, and (normalized) sunshine hours to calcuate a rough radiation
+# monthly averaged clear sky insolation incident on a horizontal surface (kWh/m2/day) for airport location: (Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec)=(7.33,7.55,7.51,7.26,6.80,6.50,6.57,6.91,7.28,7.40,7.33,7.20)
+# monthly averaged daylight hours for airport location (-1.816, 109.963) from 22 year average is: (Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec)=(12.2,12.1,12.1,12.0,12.0,12.0,12.0,12.0,12.1,12.1,12.2,12.2)
+# 1 watt-hour = 3600 joules = .0036 Mjoules
+# both of these sets of values are from NASA Surface Meteorology and Solar Energy (https://eosweb.larc.nasa.gov/cgi-bin/sse/grid.cgi)
+# make a data frame with the month, insolation, and hours of daylight
+month<-seq(1,12,1)  # the month number
+insolation<-c(7.33,7.55,7.51,7.26,6.80,6.50,6.57,6.91,7.28,7.40,7.33,7.20) # the insolation values
+daylight<-c(12.2,12.1,12.1,12.0,12.0,12.0,12.0,12.0,12.1,12.1,12.2,12.2)   # the maximum daylight hours
+## note that we could also use the daylength function from the pheno package to calculate the daylight hours
+tmp<-cbind.data.frame(month,insolation,daylight)
+# pull out just the month from the dates
+KTG$month<-as.numeric(format(KTG$date,"%m"))
+#head(KTG$month)  # check to make sure it's running correctly   
+# then use "join" from the plyr package to combine the two data sets based on the month value, and also preserve the original row order
+KTG<-join(KTG,tmp,by="month")
+# last, calculate the radiation based on the percentage of total daylight hours sunshine was observed multiplied by the clear sky insolation, and then convert it to MJ (1KWh=3.6MJ)
+KTG$radiation<-(((KTG$psun)*KTG$daylight)*KTG$insolation)*3.6
+# calculates the hours of sunshine as a percentage and then converts that to what it would be if it was the real daylight hours... this is a big assumption!!!!
+
+# remove the intermediate columns we added for month, insolation, and hours of daylight
+KTG$month<-NULL
+KTG$insolation<-NULL
+KTG$daylight<-NULL
+
+###################### Latitude
+# Ketapang airport is at approximately 1.8164°S --> -1.8164
+lat<- -1.8164
+
+
+###################### Elevation
+# Ketapang airport elevation is approximately 14 meters (need to double check this)
+elev<-14
+
+###################### Dewpoint
+# calculate dewpoint using the simplification presented in Lawrence 2005 (may later want to use a more precise equation)
+# this uses relative humidity (so assuming that the values in the spreadsheed are relative, not absolute!) and temperature
+# dewpoint temperature = T - ((100 - relative humdiity)/5)
+# T is the minimum temperature (check this)
+KTG$dewpoint<-KTG$T_min-((100-KTG$humidity)/5)
+#head(KTG$dewpoint)
+```
+
+Because the aet function takes values from previous day(s) into account, cut down to only the time periods that we know are good before calculating the aet. Let's take November 2001 through February 2015. 
+
+```{r}
+KTG_00to15<-KTG[(KTG$date>=as.Date("01/11/2000", format="%d/%m/%Y",tz="UTC+7") & KTG$date<as.Date("03/01/2015", format="%d/%m/%Y",tz="UTC+7")),]
+```
+
+
+Then do the calculation for reference evapotranspiration, using both the function directly from Dobrowski et al and the one from Dan. Ideally they would come up with the same numbers and plotting them would result in a straight line. 
+
+```{r}
+ET0_output<-dailyET0(lat=lat,elev=elev,psun=KTG_00to15$psun,wind=KTG_00to15$wind_speed_ms,doy=KTG_00to15$doy,tmax=KTG_00to15$T_max,tmin=KTG_00to15$T_min,rh=KTG_00to15$humidity)
+```
+
+# Calcluate actual evapotranspiration (aet), deficit, etc. 
+
+Then calculate actual evapotranspiration etc. using Dan's function. 
+```{r}
+# just trying a random value for awc --> it's the average value in http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.461.1371&rep=rep1&type=pdf
+soilbalance122<-aetmod(et0=ET0_output$et0,precip=KTG_00to15$precip,awc=122)
+
+# also try some other numbers
+soilbalance50<-aetmod(et0=ET0_output$et0,precip=KTG_00to15$precip,awc=50)
+soilbalance80<-aetmod(et0=ET0_output$et0,precip=KTG_00to15$precip,awc=80)
+soilbalance100<-aetmod(et0=ET0_output$et0,precip=KTG_00to15$precip,awc=100)
+
+
+```
+
+Now, write out the data after adding in the ET0 and soil-water balance information. 
+```{r}
+# put the et0 and aet data into the data frame with all the other data
+KTG_00to15$ET0<-ET0_output$et0
+
+KTG_00to15$aet50<-soilbalance50$aet
+KTG_00to15$deficit50<-soilbalance50$def
+KTG_00to15$soil50<-soilbalance50$soil
+KTG_00to15$aet80<-soilbalance80$aet
+KTG_00to15$deficit80<-soilbalance80$def
+KTG_00to15$soil80<-soilbalance80$soil80
+KTG_00to15$aet100<-soilbalance100$aet
+KTG_00to15$deficit100<-soilbalance100$def
+KTG_00to15$soil100<-soilbalance100$soil
+KTG_00to15$aet122<-soilbalance122$aet
+KTG_00to15$deficit122<-soilbalance122$def
+KTG_00to15$soil122<-soilbalance122$soil
+
+# remove a few columns that aren't important for anythign in the future before writing out the data
+KTG_00to15$wind_maxgust_knots<-NULL
+KTG_00to15$wind_dir<-NULL
+KTG_00to15$wind_maxgust_dir<-NULL
+KTG_00to15$wind_speed_knots<-NULL
+KTG_00to15$doy<-NULL
+
+write.table(KTG_00to15,"/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/Ketapang_ET0andAET_00to15.txt",sep=",",row.names = F)
+```
+
+# Combining ET0/aet with MODIS active fire detections
+
+Okay! Now we're going to read in the new data (even though it's already in the memory) so that in future we can just start at this code chunk. 
+```{r}
+## create a mini function that makes the date of the detected fire be read in as a POSIXct date, rather than as a character or a string or a factor
+# it's been reformatted by R when it was converted to a table before so we can't use the same function
+setClass('yyyy-mm-dd')
+setAs("character","yyyy-mm-dd", function(from) as.Date(from, format="%Y-%m-%d",tz="UTC+7"))    # also sets the time zone; really just needed so we don't get an error because all of this data is from the same spot
+
+# now read in the data
+weather_00to15<-read.csv("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/Ketapang_ET0andAET_00to15.txt",header=T,colClasses = c("factor","factor","yyyy-mm-dd",rep("numeric",6),"character",rep("numeric",17)))
+
+
+# double check to make sure that this  DOES get rid of all of the big NA runs
+print(paste(sum(is.na(weather_00to15$T_min)),"NAs in T_min"))
+print(paste(sum(is.na(weather_00to15$T_max)),"NAs in T_max"))
+print(paste(sum(is.na(weather_00to15$T_avg)),"NAs in T_avg"))
+print(paste(sum(is.na(weather_00to15$humidity)),"NAs in humidity"))
+print(paste(sum(is.na(weather_00to15$precip)),"NAs in precip"))
+print(paste(sum(is.na(weather_00to15$sunshine)),"NAs in sunshine hours"))
+print(paste(sum(is.na(weather_00to15$wind_speed_ms)),"NAs in wind speed"))
+print(paste(sum(is.na(weather_00to15$ET0)),"NAs in ET0"))
+```
+So, we don't have any NA values! Yay! 
+
+Let's do some visualizing of the data. 
+```{r}
+# et0
+plot(weather_00to15$date,weather_00to15$ET0,type="p",pch=16,cex=0.25,ylab="ET0 ",xlab="Date", main="ET0 Over Time")
+
+# AET 50, 80, 100, 122 (separately)
+plot(weather_00to15$date,weather_00to15$aet50,type="p",pch=16,cex=0.25,ylab="AET = 50",xlab="Date", main="AET Over Time, AWC = 50")
+plot(weather_00to15$date,weather_00to15$aet80,type="p",pch=16,cex=0.25,ylab="AET = 80",xlab="Date", main="AET Over Time, AWC = 80")
+plot(weather_00to15$date,weather_00to15$aet100,type="p",pch=16,cex=0.25,ylab="AET = 100",xlab="Date", main="AET Over Time, AWC = 100")
+plot(weather_00to15$date,weather_00to15$aet122,type="p",pch=16,cex=0.25,ylab="AET = 122",xlab="Date", main="AET Over Time, AWC = 122")
+
+# just for fun look at ET0 vs aet
+plot(weather_00to15$ET0,weather_00to15$aet50,type="p",pch=16,cex=0.25,ylab="AET = 50",xlab="Date", main="ET0 vs. AET, AWC = 50")
+plot(weather_00to15$ET0,weather_00to15$aet80,type="p",pch=16,cex=0.25,ylab="AET = 80",xlab="Date", main="ET0 vs. AET, AWC = 80")
+plot(weather_00to15$ET0,weather_00to15$aet100,type="p",pch=16,cex=0.25,ylab="AET = 100",xlab="Date", main="ET0 vs. AET, AWC = 100")
+plot(weather_00to15$ET0,weather_00to15$aet122,type="p",pch=16,cex=0.25,ylab="AET = 122",xlab="Date", main="ET0 vs. AET, AWC = 122")
+
+
+# also plot soil deficit instead of aet
+plot(weather_00to15$date,weather_00to15$deficit50,type="p",pch=16,cex=0.25,ylab="Deficit, AWC = 50",xlab="Date", main = "Deficit over time, AWC = 50")
+plot(weather_00to15$date,weather_00to15$deficit80,type="p",pch=16,cex=0.25,ylab="Deficit, AWC = 80",xlab="Date", main = "Deficit over time, AWC = 80")
+plot(weather_00to15$date,weather_00to15$deficit100,type="p",pch=16,cex=0.25,ylab="Deficit, AWC = 100",xlab="Date", main = "Deficit over time, AWC = 100")
+plot(weather_00to15$date,weather_00to15$deficit122,type="p",pch=16,cex=0.25,ylab="Deficit, AWC = 122",xlab="Date", main = "Deficit over time, AWC = 122")
+
+```
+
+Now combine with the MODIS data. 
+
+
+Read in the necessary libraries, and some code to read in the fire detections that have already been cut down to just the area within the buffer, and make the columns be the correct class.
+```{r}
+# load libraries
+# install the package if you don't already have it
+if (!require("plyr")) {
+     install.packages("plyr")
+     library(plyr)
+     }
+
+# then the MODIS data
+fire_500km<-read.csv("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/FRP_daily_500km.txt",header=T,sep=",",colClasses =c("yyyy-mm-dd","numeric"))
+
+# rename the date column
+colnames(fire_500km)[1]<-"date"
+
+# make it match the weather data in time frame
+fire_500km_00to15<-fire_500km[(fire_500km$date>=as.Date("01/11/2000", format="%d/%m/%Y",tz="UTC+7") & fire_500km$date<as.Date("03/01/2015", format="%d/%m/%Y",tz="UTC+7")),]
+
+```
+
+Then combine the data sets. 
+```{r}
+# combine teh two data sets by the date, keeping the weather data even if there is no reported FRP for a day
+weather_fire<-join(fire_500km_00to15,weather_00to15,by="date",type="full",match="all")
+
+# if we wanted  order it by date this is how we'd do it
+ordered_weather_fire<-weather_fire[order(weather_fire$Date),]
+```
+
+Then plot things!!! 
+```{r}
+# then plot it! 
+plot(weather_fire$aet50,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+plot(weather_fire$deficit50,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+plot(weather_fire$aet80,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+plot(weather_fire$deficit80,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+plot(weather_fire$aet100,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+plot(weather_fire$deficit100,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+plot(weather_fire$aet122,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+plot(weather_fire$deficit122,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+```
+
+
