@@ -217,11 +217,8 @@ barplot(table(detections_500km_df$month),main="Number of Fire Detections within 
 
 # by year
 barplot(table(detections_500km_df$year),main="Number of Fire Detections within 500 km of Ketapang",xlab="Year",ylab="",las=2)
-
-# can we do it by both? 
-
 ```
-When we look at the number of fire detections by month, it's clear that there is a "fire season" from August through October (with a bit of a ramp up period in July). 
+When we look at the number of fire detections by month (summed over the period of record), it's clear that there is a "fire season" from August through October (with a bit of a ramp up period in July). 
 
 
 We can also look at the number of fires detected over time in smaller areas around Ketapang. 
