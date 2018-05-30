@@ -38,10 +38,10 @@ rsconnect/
 .Rproj.user
 
 # Folders to ignore
-climate_data/**/
-code_archive/**/
+climate_data/**
+code_archive/**
 Data/**
-fire_data_archive/**/
-GIS_data/**/
-map_documents/**/
+fire_data_archive/**
+GIS_data/**
+map_documents/**
 GFED/**
