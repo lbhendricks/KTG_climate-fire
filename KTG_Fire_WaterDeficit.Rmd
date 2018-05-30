@@ -539,7 +539,7 @@ aetmod <- function(et0,precip,awc){
 ```
 
 
-##  Initial data exploration
+##  Climate Data
 
 We need to read in the climate data from Ketapang, and perform a couple of calculations to get everything into the right units and format. 
 ```{r}
@@ -547,7 +547,7 @@ We need to read in the climate data from Ketapang, and perform a couple of calcu
 ## no data is given the value 9999 in the original data; na.strings converts indicated values to NA (which is what R uses to indicate no data) without any extra steps
 ## 9999 is no data
 ## 8888 is no measurable data. not sure how this is different than no data... maybe these should actually be 0?
-KTG<-read.csv("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/KetapangClimate1986_2016 COPY.csv",header=T,sep=",",na.strings=c("9999","8888"),colClasses = c("character","factor","ddmmyyyy",rep("numeric",7),"factor","numeric","factor") )
+KTG<-read.csv("/Users/laurenhendricks/Documents/Borneo/KTG_climate-fire/Data/KetapangClimate1986_2016 COPY.csv",header=T,sep=",",na.strings=c("9999","8888"),colClasses = c("character","factor","ddmmyyyy",rep("numeric",7),"factor","numeric","factor") )
 
 # rename the columns into english
 colnames(KTG)<-c("station","stationID","date","T_min","T_max","T_avg","humidity","precip","sunshine","wind_speed_knots","wind_dir","wind_maxgust_knots","wind_maxgust_dir")
@@ -568,155 +568,21 @@ We also have:
 * Date, which needs to be converted to the day of the year (aka Julian date); and
 * Hours of sunshine, which needs to be converted to a percentage. 
 
-But first, some quick data exploration. 
-```{r}
-# look at the sunshine data  
-boxplot(KTG$sunshine,main="Hours of Sunshine")
-
-# look at the temperature data  
-boxplot(KTG$T_min,main="Minimum Temperature")
-boxplot(KTG$T_max,main="Maximum Temperature")
-boxplot(KTG$T_avg,main="Average Temperature")
-
-# look at the humidity data
-boxplot(KTG$humidity,main="Relative Humidity")
-
-# precip data
-boxplot(KTG$precip,main="Daily Precipitation")
-
-# wind data
-boxplot(KTG$wind_speed_knots,main="Wind Speed")
-```
-Looks like the data is definitely not normally distributed for most of these variables, but since we're not trying to do any statistical analyses on these it shouldn't be a problem. We also need to note that there are some clear problems in the data. 
+The data is definitely not normally distributed for most of these variables, but since we're not trying to do any statistical analyses on these it shouldn't be a problem. We also need to note that there are some clear problems in the data. 
 
 ## Dealing with NAs and other non-sensical values
-There also seem to be some issues with the precipitation data--there is a LOT of probably missing data--but those are even harder to track down, so just read them in as 0 for now. 
+There are some issues with the precipitation data--there is a LOT of probably missing data--but those are even harder to track down, so just read them in as 0 for now. 
 
-Another thing that might need to be dealt with has to do with the windspeed. Windspeed varies with height, so we need to find out the height that the measurement was taken at. There are also a lot of missing values. 
+Another thing that needs to be dealt with has to do with the windspeed. Windspeed varies with height, so we need to find out the height that the measurement was taken at. There are also a lot of missing values. 
 
-Calculate a moving average that we can then use to fill in some of the missing values. This isn't the ideal approach, but we have to have some value--otherwise the AET for that day will be modeled as 0, which is even less realistic than filling it in with modeled/smoothed data. (Note that for some things, like temperature, a moving average does seem reasonable, but it makes less sense for other things, like wind and precipitation.)
-```{r}
-# first count the number of NAs in the columns to identify which need to have a moving average applied
-print(paste(sum(is.na(KTG$T_min)),"NAs in T_min"))
-print(paste(sum(is.na(KTG$T_max)),"NAs in T_max"))
-print(paste(sum(is.na(KTG$T_avg)),"NAs in T_avg"))
-print(paste(sum(is.na(KTG$humidity)),"NAs in humidity"))
-print(paste(sum(is.na(KTG$precip)),"NAs in precip"))
-print(paste(sum(is.na(KTG$sunshine)),"NAs in sunshine hours"))
-print(paste(sum(is.na(KTG$wind_speed_knots)),"NAs in wind speed"))
-# not checking for wind/gust direction because we're not using that anywhere
-```
-So, looks like we need to use the moving average for every variable of interest, though there are A LOT more missing values for wind than for any of the other measurements.
-
-So, we can use a moving average (mean) to fill in the missing values. Use rollapply() from the zoo package. 
-[Could also check out na.approx() or na.spline() in the zoo package, which could be an interesting comparison. Though, with some initial testing, it seems like it's not flexible enough? It has issues with NA values. We could also try na.aggregate() which replaces NAs with aggregated values, so we could replace NAs with something like a monthly mean. This is probably not better than a moving average. Yet another option is given by na.locf() which fills in the NAs with the last non-NA value.] 
-```{r}
-# make a data frame to store the rolling means in
-# also have the original data in there NEXT TO THE ROLLING MEAN so it's easier to compare the results
-KTG_rollmeans<-data.frame(matrix(nrow=length(KTG$date),ncol=1+(7*2)))    # same number of rows as original, and then 2 columns for each of the 7 variables and have a column for the date
-
-# add in the dates
-KTG_rollmeans[,1]<-KTG$date
-
-# set the window
-window<-10    
-KTG_rollmeans[,2]<-KTG$T_min
-KTG_rollmeans[,3]<-rollapply(KTG$T_min,window,FUN=mean,fill=NA,partial=1,na.rm=T)
-KTG_rollmeans[,4]<-KTG$T_max
-KTG_rollmeans[,5]<-rollapply(KTG$T_max,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
-KTG_rollmeans[,6]<-KTG$T_avg
-KTG_rollmeans[,7]<-rollapply(KTG$T_avg,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
-KTG_rollmeans[,8]<-KTG$humidity
-KTG_rollmeans[,9]<-rollapply(KTG$humidity,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
-KTG_rollmeans[,10]<-KTG$precip
-KTG_rollmeans[,11]<-rollapply(KTG$precip,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
-KTG_rollmeans[,12]<-KTG$sunshine
-KTG_rollmeans[,13]<-rollapply(KTG$sunshine,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
-KTG_rollmeans[,14]<-KTG$wind_speed_knots
-KTG_rollmeans[,15]<-rollapply(KTG$wind_speed_knots,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
-
-# rename the columns
-# will be combo of original names plus noting that it's a rolling mean
-names_og<-colnames(KTG)[-(c(1,2,3,11,12,13))]     # get the original names but don't need first two columns (station name & id) or the columns with wind directions. don't need date either because we don't want to append roll mean to that
-# also not going to use wind gusts so don't include that
-names_new<-paste(names_og,"rollmean10",sep="_")   # add rolling mean to the names
-
-# now a for loop to combine the original and new names in the correct order
-names_rollmeans<-NA      # where the new names will be stored
-i<-1      # counter that keeps track of which index in the new combined names vector we are at
-
-for(col in 1:length(names_new)){   # col keeps track of index in the vectors we're pulling from 
-    names_rollmeans[i]<-names_og[col]
-    i<-i+1
-    names_rollmeans[i]<-names_new[col]
-    i<-i+1
-}
-
-# add date at the beginning
-names_rollmeans<-c("date",names_rollmeans)
-
-# now rename the columns
-colnames(KTG_rollmeans)<-names_rollmeans
-
-# print the new number of NAs (though they're acutally NaNs, not NAs, because that is what rollsum() puts out.)
-print(paste(sum(is.na(KTG_rollmeans$T_min_rollmean10)),"NAs in T_min_rollmean10"))
-print(paste(sum(is.na(KTG_rollmeans$T_max_rollmean10)),"NAs in T_max_rollmean10"))
-print(paste(sum(is.na(KTG_rollmeans$T_avg_rollmean10)),"NAs in T_avg_rollmean10"))
-print(paste(sum(is.na(KTG_rollmeans$humidity_rollmean10)),"NAs in humidity_rollmean10"))
-print(paste(sum(is.na(KTG_rollmeans$precip_rollmean10)),"NAs in precip_rollmean10"))
-print(paste(sum(is.na(KTG_rollmeans$sunshine_rollmean10)),"NAs in sunshine_rollmean10"))
-print(paste(sum(is.na(KTG_rollmeans$wind_speed_knots_rollmean10)),"NAs in windspeed_rollmean10"))
-# not checking for wind/gust direction because we're not using that anywhere
-```
-*NOTE:* There seem to be a few periods where the entire weather station must have been down, because there are no values at all for any of the measurements for those days. Even roll sum can't deal with that.... unless we use a huge window. Those time periods are: July 2000 and September 1997 (the whole months). To fill all those in, the window would need to be over 30 days... and that's probably too big! So for the 20 and 21 days in the middle of the month we don't have any values (because the first and last 5 do have numbers, pulled in from the previous and following months by the roll apply function). Plus, there are several 10+ day periods where no wind measurements were taken: Jan 11-21 1991, April 2-13 1991, April 28-May 8 1991, and Nov 27-Dec 6 1992. (Also note that there are a lot of missing values on either side of those periods, too, but there is at least 1 measurement for every 10 apart from those chunks.) Weirdly, in a lot of these periods, there IS precipitation data but the values are all 0. (So maybe this isn't accurate data? Checked in the raw data and they really are 0s, not 8888/9999s.) And the 44 NAs/NaNs for precip are in 2015, not in those other long stretches--it's basically the second half of 2015, with a few days here and there where there is data so it isn't fully NaNs. Sooo...don't use those chunks of data! 
-
-
-So, there are some limitations even after filling in the missing values with moving averages... but we have to go ahead and fill in those values anyways.
-```{r}
-# now make the replacements! 
-# figured out how to do this with the toy data in /Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/code/SandboxCode/FillMissingValues.R
-KTG$T_min[is.na(KTG$T_min)]<-KTG_rollmeans$T_min_rollmean10[is.na(KTG$T_min)]
-KTG$T_max[is.na(KTG$T_max)]<-KTG_rollmeans$T_max_rollmean10[is.na(KTG$T_max)]
-KTG$T_avg[is.na(KTG$T_avg)]<-KTG_rollmeans$T_avg_rollmean10[is.na(KTG$T_avg)]
-KTG$precip[is.na(KTG$precip)]<-KTG_rollmeans$precip_rollmean10[is.na(KTG$precip)]
-KTG$humidity[is.na(KTG$humidity)]<-KTG_rollmeans$humidity_rollmean10[is.na(KTG$humidity)]
-KTG$sunshine[is.na(KTG$sunshine)]<-KTG_rollmeans$sunshine_rollmean10[is.na(KTG$sunshine)]
-KTG$wind_speed_knots[is.na(KTG$wind_speed_knots)]<-KTG_rollmeans$wind_speed_knots_rollmean10[is.na(KTG$wind_speed_knots)]
-
-# also add in a column that flags where there are NAs filled in with another value in at least one of the other columns
-KTG$flag<-NA
-KTG$flag[is.na(KTG$T_min)]<-"One or more estimated values"
-KTG$flag[is.na(KTG$T_max)]<-"One or more estimated values"
-KTG$flag[is.na(KTG$T_avg)]<-"One or more estimated values"
-KTG$flag[is.na(KTG$precip)]<-"One or more estimated values"
-KTG$flag[is.na(KTG$humidity)]<-"One or more estimated values"
-KTG$flag[is.na(KTG$sunshine)]<-"One or more estimated values"
-KTG$flag[is.na(KTG$wind_speed_knots)]<-"One or more estimated values"
-
-```
-
-Now check to see if we have the NAs filled in. 
-```{r}
-# check to see if the number of filled in NAs is less than before
-# (ideally it would be 0 but because of the issue noted earlier about the 10+ day stretches of no values we won't ever see 0)
-print(paste(sum(is.na(KTG$T_min)),"NAs in T_min"))
-print(paste(sum(is.na(KTG$T_max)),"NAs in T_max"))
-print(paste(sum(is.na(KTG$T_avg)),"NAs in T_avg"))
-print(paste(sum(is.na(KTG$humidity)),"NAs in humidity"))
-print(paste(sum(is.na(KTG$precip)),"NAs in precip"))
-print(paste(sum(is.na(KTG$sunshine)),"NAs in sunshine hours"))
-print(paste(sum(is.na(KTG$wind_speed_knots)),"NAs in wind speed"))
-```
-
-So, it's not perfect but it IS better than the original data! However, because the aet function takes values from previous day(s) into account, we can't have any NA values at all. So, we have to cut down to only the time periods that we know are good before calculating the aet. Let's take November 2001 through February 2015. 
+To start, look at only November 2000 through end of February 2015, because this is a chunk of time where data collection was relatively consistent. 
 ```{r}
 KTG_00to15<-KTG[(KTG$date>=as.Date("01/11/2000", format="%d/%m/%Y",tz="UTC+7") & KTG$date<as.Date("03/01/2015", format="%d/%m/%Y",tz="UTC+7")),]
 ```
 
-And check to make sure there aren't any NAs in here.
+Make sure that there aren't any NAs in this data. 
 ```{r}
-# check to see if the number of filled in NAs is less than before
-# (ideally it would be 0 but because of the issue noted earlier about the 10+ day stretches of no values we won't ever see 0)
+# first count the number of NAs in the columns to identify which need to have a moving average applied
 print(paste(sum(is.na(KTG_00to15$T_min)),"NAs in T_min"))
 print(paste(sum(is.na(KTG_00to15$T_max)),"NAs in T_max"))
 print(paste(sum(is.na(KTG_00to15$T_avg)),"NAs in T_avg"))
@@ -724,8 +590,9 @@ print(paste(sum(is.na(KTG_00to15$humidity)),"NAs in humidity"))
 print(paste(sum(is.na(KTG_00to15$precip)),"NAs in precip"))
 print(paste(sum(is.na(KTG_00to15$sunshine)),"NAs in sunshine hours"))
 print(paste(sum(is.na(KTG_00to15$wind_speed_knots)),"NAs in wind speed"))
+# not checking for wind/gust direction because we're not using that anywhere
 ```
-So now we have a set of data that doesn't have any NA values, and we can proceed and calcluate the aet and soil water balance. 
+Because there aren't any NAs, we don't need to do anything to fill in missing values! (When we use the whole dataset, we do have this problem. See ClimateData_Exploration file on that.) We can proceed and calcluate the aet and soil water balance. 
 
 Now do the same initial data exploration with this data set that is subset of the original set, and has all NA values filled in with a moving average. 
 ```{r}
@@ -834,7 +701,7 @@ KTG_00to15<-KTG[(KTG$date>=as.Date("01/11/2000", format="%d/%m/%Y",tz="UTC+7") &
 ```
 
 
-Then do the calculation for reference evapotranspiration, using both the function directly from Dobrowski et al and the one from Dan. Ideally they would come up with the same numbers and plotting them would result in a straight line. 
+Then do the calculation for reference evapotranspiration.
 
 ```{r}
 ET0_output<-dailyET0(lat=lat,elev=elev,psun=KTG_00to15$psun,wind=KTG_00to15$wind_speed_ms,doy=KTG_00to15$doy,tmax=KTG_00to15$T_max,tmin=KTG_00to15$T_min,rh=KTG_00to15$humidity)
