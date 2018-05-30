@@ -42,7 +42,11 @@ setClass('ddmmyyyy')
 setAs("character","ddmmyyyy", function(from) as.Date(from, format="%d/%m/%Y",tz="UTC+7"))    # also sets the time zone; really just needed so we don't get an error because all of this data is from the same spot
 ```
 
-Read in a very rough shapefile with the boundaries of the countries, and then extract the three countries that make up Borneo. (We don't need a detailed shapefile here, because it is just to give us a very general idea of where we are and to make sure that things are scaling correctly etc.)
+
+# MODIS Fire Detections
+Below, find the code to extract the fires within a set distance of the Ketapang airport. We've already trimmed down to just the detections that are within 500 km of the airport, and we can use buffers to pull out things that are within smaller distances of the airport. 
+
+Read in a very rough shapefile with the boundaries of the countries, and then extract the three countries that make up Borneo. (We don't need a detailed shapefile here, because it is just to give us a very general idea of where we are and to make sure that things are scaling correctly etc.). (Note: references to a more detailed shapefile are commented out.) This is just to provide some background/reference information to  make sure that things are plotting in the correct spot.
 ```{r}
 # read in the shapefile
 countries<-readOGR(dsn="/Users/laurenhendricks/Documents/GIS_Data/ne_110m_admin_0_countries/",layer="ne_110m_admin_0_countries")
@@ -80,37 +84,6 @@ plot(KTG.sp_proj,add=T,pch=16,col="red")
 ```
 
 
-# MODIS Fire Detections
-Below, find the code to extract the fires within a set distance of the Ketapang airport. 
-
-## Extract fires that are roughly within 500 km of the Ketpang airport (the "rough square")
-To start, roughly model the distance around the airport as a square and extract all of the records that are within that square based only on the coordinates. This will give us fewer records of fire detections to sort through in the next step, when we make things spatial. Then, make the detection records spatial, plot them, and extract those that are within a set radius of the airport. 
-
-For a 500 km buffer, the maximum latitudes are approximately 6.5 S and 2.7 N; the maximum longitudes are approximately 105 E and 115 E. This makes a very rough, preliminary version of the "square" file, which has everything within a ~1000kmx1000km square roughly centered on the Ketapang airport. 
-```{r,eval=FALSE}
-path<-"/Volumes/Samsung USB/BORNEO/MODIS/mcd14ml/"     # this is on Lauren's thumb drive. It's ~4GB total and runs through January 2018
-
-# make an empty variable to store the data in
-detections_500km<-data.frame(YYYYMMD=integer(),HHMM=integer(),sat=logical(),lat=numeric(),lon=numeric(),T21=numeric(),T31=numeric(),
-                 sample=integer(),FRP=numeric(),conf=integer(),type=integer())
-
-# list of all of the file names
-file.names <- dir(path, pattern =".txt")
-
-# then the for loop and then also do the subset
-for(i in 1:length(file.names)){
-  file <- read.table(paste(path,file.names[i],sep=""),header=TRUE, sep="")
-  tmp<-subset(file,(file$lat>-6.5 & file$lat<2.7) & (file$lon>105 & file$lon<115))
-  detections_500km<-rbind(detections_500km,tmp)   # note that this is NOT an ideal way to do this, because R has to copy the data frame object every time something is added. but, we don't know the number of rows we'll need in advance so initializing a data frame doesn't work very well. Shoudl check out rbind.fill in plyr.  
-}
-
-# write out the data so we have it and can go from this file in the future
-write.table(detections_500km, file = "/Volumes/Samsung USB/BORNEO/MODIS/mcd14ml_KTG_500km.txt",sep=" ",row.names = FALSE)
-
-# remove the detections object and we'll read it in from the file for future operations
-rm(detections_500km)
-```
-
 ## Extract fires that are within 500 km of the Ketapang airport
 To extract the fires within a set distance of the airport, we we need make buffers of varying distances around the Ketapang airport. Remember that gBuffer needs projected data as its input, and that the units of this projection are meters (so we have to give the width of the buffer in meters). Then plot all of the buffers to make sure that the they are correct. 
 
@@ -129,38 +102,8 @@ plot(KTG_buffer50km,add=T,col="grey50")
 plot(KTG_buffer5km,add=T,col="grey30")
 plot(KTG.sp_proj,add=T,pch=17,col="red",cex=0.55)         # don't plot Ketapang because at this scale we can't see both the 5km buffer and the point
 ```
-Now it's time to start extracting the detections that are within each buffer. 
 
-Read in the "rough square" data to check it out. Then, make it spatial and project it. Then, use the buffers to extract only the things within the desired distances of the airport. Start with the biggest buffer; everything else will be a subset of this file. This means that we'll only need to access all of the original fire detection files once. This only needs to be done ONCE. Don't execute this chunk again! 
-```{r, eval=FALSE}
-# read in the data
-detections_500km_square<-read.table("/Volumes/Samsung USB/BORNEO/MODIS/mcd14ml_KTG_500km.txt",header=T,sep=" ")
-
-# turn the data frame into a spatial points data frame
-detections_500km_square_sp<-SpatialPointsDataFrame(cbind(detections_square_500km$lon,detections_square_500km$lat),detections_square_500km,proj4string = CRS("+proj=longlat +ellps=WGS84"))
-                                          
-# project the data                                          
-detections_500km_square_sp_proj<-spTransform(detections_500km_square_sp,"+proj=utm +zone=49 +south +a=6378160 +b=6356774.50408554 +units=m +no_defs")
-
-# cut out only the things in the buffer
-detections_500km_c<-detections_500km_square_sp_proj[KTG_buffer500km,]
-
-# plot it to check and make sure it worked
-plot(SEAsia_proj)
-plot(detections_500km_c,add=T)
-
-# then write out only the attribute table to a new file
-write.table(detections_500km_c@data, file = "/Users/laurenhendricks/Documents/Borneo/KTG_climate-fire/Data/mcd14ml_KTG_500km.txt",sep=" ",row.names = FALSE)
-
-# and print out the number of detections
-print(paste(length(detections_500km_c$YYYYMMDD),"fire detections within a 500km radius of KTG"))
-
-# and remove the data from memory
-rm(detections_500km_square, detections_500km_square_sp, detections_500km_square_sp_proj)
-rm(detections_500km, detections_500km_c,detections_500km_sp)
-```
-
-Read in the detections within 500 km of KTG. This is the data that we extracted in the previous chunk. 
+Read in the detections within 500 km of KTG. This is the data that we extracted in a separate file (MODISfire_500km_KTG) 
 ```{r} 
 detections_500km_df<-read.table("/Users/laurenhendricks/Documents/Borneo/KTG_climate-fire/Data/mcd14ml_KTG_500km.txt",sep=" ",header = T,colClasses = c("yyyymmdd","character","factor",rep("numeric",4),"integer","numeric","integer","factor"))
 
