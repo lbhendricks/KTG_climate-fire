@@ -150,7 +150,7 @@ plot(SEAsia_proj)
 plot(detections_500km_c,add=T)
 
 # then write out only the attribute table to a new file
-write.table(detections_500km_c@data, file = "/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/mcd14ml_KTG_500km.txt",sep=" ",row.names = FALSE)
+write.table(detections_500km_c@data, file = "/Users/laurenhendricks/Documents/Borneo/KTG_climate-fire/Data/mcd14ml_KTG_500km.txt",sep=" ",row.names = FALSE)
 
 # and print out the number of detections
 print(paste(length(detections_500km_c$YYYYMMDD),"fire detections within a 500km radius of KTG"))
@@ -162,7 +162,7 @@ rm(detections_500km, detections_500km_c,detections_500km_sp)
 
 Read in the detections within 500 km of KTG. This is the data that we extracted in the previous chunk. 
 ```{r} 
-detections_500km_df<-read.table("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/mcd14ml_KTG_500km.txt",sep=" ",header = T,colClasses = c("yyyymmdd","character","factor",rep("numeric",4),"integer","numeric","integer","factor"))
+detections_500km_df<-read.table("/Users/laurenhendricks/Documents/Borneo/KTG_climate-fire/Data/mcd14ml_KTG_500km.txt",sep=" ",header = T,colClasses = c("yyyymmdd","character","factor",rep("numeric",4),"integer","numeric","integer","factor"))
 
 # pull out only the year. Note that this way of doing it gets teh year as a character (so it's no longer a real date) but this makes it possible for use to make a better histogram
 detections_500km_df$year<-format(detections_500km_df$YYYYMMDD,"%Y")
@@ -302,7 +302,7 @@ Since there is such extreme annual variability in the number of fires detected a
 The MEI data can be found linked at the end of that page, or at this link: https://www.esrl.noaa.gov/psd/enso/mei/table.html. It shows bimonthly values from 1950 to present (table is updated approximately monthly).
 ```{r}
 # read in the MEI data
-MEI<-read.csv("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/MEIdata.txt",header=F,sep="\t")[-1,]   # don't read in the first row; it's the month names and the separators aren't correct
+MEI<-read.csv("/Users/laurenhendricks/Documents/Borneo/KTG_climate-fire/Data/MEIdata.txt",header=F,sep="\t")[-1,]   # don't read in the first row; it's the month names and the separators aren't correct
 
 # assign column header names to label the meaurement
 months<-c("Year","Dec-Jan","Jan-Feb","Feb-Mar","Mar-Apr","Apr-May","May-Jun","Jun-Jul","Jul-Aug","Aug-Sep","Sep-Oct","Oct-Nov","Nov-Dec")
@@ -351,7 +351,7 @@ abline(h=0,col="grey")
 ```
 
 We can also visualize this in a different way, where the graph is colored according to whether the MEI index is positive or negative. We do this using the *polygon()* function, with a separate polygon created for the negative values and the positive values.  
-```{r,eval=FALSE}
+```{r}
 # also create a version where it is colored red when the MEI value is positive and blue when the MEI value is negative
 # to do this using polygon, we need to have two separate polygons. 
 
@@ -372,6 +372,9 @@ axis.Date(side=1,MEI_pos$date, format="%Y",at=seq.Date(as.Date("1950/1/1"),by="5
 par(new=T)
 plot(MEI_neg2$MEI_list~MEI_neg2$date,type="l",ylim=c(-3,3),lwd=0.25,xlab="",ylab="",xaxt="n")
 polygon(y=MEI_neg2$MEI_list,x=MEI_neg2$date,col="blue")
+title(main="Multivariate ENSO Index, Period of Record (1950-2018)")
+legend("bottomright",fill=c("red","blue"),c("El Niño","La Niña"),bty="n")
+
 ```
 
 Plot the MEI for only the years 2000-2017 (to match the data from Ketapang)
@@ -394,6 +397,8 @@ axis.Date(side=1,MEI_pos$date, format="%Y",at=seq.Date(as.Date("1950/1/1"),by="5
 par(new=T)
 plot(MEI_neg2$MEI_list~MEI_neg2$date,type="l",ylim=c(-3,3),lwd=0.25,xlab="",ylab="",xaxt="n")
 polygon(y=MEI_neg2$MEI_list,x=MEI_neg2$date,col="blue")
+title(main="Multivariate ENSO Index, 2000-2017")
+legend("bottomright",fill=c("red","blue"),c("El Niño","La Niña"),bty="n")
 ```
 
 can we plot these together? 
@@ -403,7 +408,6 @@ can we plot these together?
 barplot(table(detections_500km_df$year),border=F,las=2)
 
 plot(table(detections_500km_df$year),type="l",las=2)
-
 ```
 So, when we look at the MEI as an indicator of El Nino/La Nina conditions paired with the number of fire detections (for now on an annual basis--later we should make these into line graphs?)
 
