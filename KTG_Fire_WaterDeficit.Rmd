@@ -343,13 +343,34 @@ legend("bottomright",fill=c("red","blue"),c("El Niño","La Niña"),bty="n")
 
 can we plot these together? 
 ```{r}
-# 500 km
-#table(detections_500km_df$year)
+# make barplot showing number of detections by year
 barplot(table(detections_500km_df$year),border=F,las=2)
 
-plot(table(detections_500km_df$year),type="l",las=2)
+# do the same thing but with a line plot instead of bars
+detections_500km_byyear<-as.data.frame(table(detections_500km_df$year))    # make a table summarizing the number of detections by year
+colnames(detections_500km_byyear)<-c("Year","Detections")   # rename the columns
+detections_500km_byyear$Year<-as.integer(as.character(detections_500km_byyear$Year))     # force to integer b/c output of table is factor for eyars
+
+plot(detections_500km_byyear$Year,detections_500km_byyear$Detections,type="h")
 ```
-So, when we look at the MEI as an indicator of El Nino/La Nina conditions paired with the number of fire detections (for now on an annual basis--later we should make these into line graphs?)
+It's interesting to look at MEI paired with the number of detections. This initial pass has the number of detections binned by year (even though MEI is montly) and future versions should have them both be monthly. 
+```{r}
+# then plot it! 
+par(mar=c(5,4,3,4))
+plot(MEI_pos$MEI_list~MEI_pos$date,type="l",ylim=c(-3,3),lwd=0.25,xlab="Year",ylab="Standardized Departure",xaxt="n")
+polygon(y=MEI_pos$MEI_list,x=MEI_pos$date,col="red")
+axis.Date(side=1,MEI_pos$date, format="%Y",at=seq.Date(as.Date("1950/1/1"),by="5 years",length.out=14),las=2)
+par(new=T)
+plot(MEI_neg2$MEI_list~MEI_neg2$date,type="l",ylim=c(-3,3),lwd=0.25,xlab="",ylab="",xaxt="n")
+polygon(y=MEI_neg2$MEI_list,x=MEI_neg2$date,col="blue")
+par(new=T)
+plot(detections_500km_byyear$Detections~detections_500km_byyear$Year,ylim=c(0,60000),type="l",xlab="",ylab="",xaxt="n",yaxt="n",lwd=2,lty=2)
+axis(side=4)
+mtext("Number of Detections",side=4,line=3)
+title(main="Multivariate ENSO Index and Fire Detections, 2000-2017")
+legend("topleft",fill=c("red","blue"),c("El Niño","La Niña"),bty="n")
+legend("topright","Annual Detections",lty=2,lwd=2,bty="n")
+```
 
 
 We can also look at the different types of fires that have been detected. The categories are:
