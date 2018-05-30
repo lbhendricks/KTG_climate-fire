@@ -1,0 +1,342 @@
+
+##climate_data folder
+
+setwd("/Users/dangavin/Dropbox/Projects/Indonesia/climate_data")
+
+ket<-read.table(file="Ketapang-Climate-1986-2016.csv",header=T,sep=",",na.strings=c("8888","9999"), colClasses=c("character","integer","character","numeric","numeric","numeric","numeric","numeric","numeric","numeric","character","numeric","numeric"))
+
+ket$date <- strptime(ket$date, "%d/%m/%Y")
+
+plot(ket$date$yday,ket$tmax)
+
+## exploring daily data.  Below this section, will summarize into 7-day bins
+loess.tmax<-loess(ket$tmax~ket$date$yday,span=0.08,degree=1)
+lines(predict(loess.tmax),col=5)
+#detrended by seasonal pattern
+ket$tmax.yrdt<-ket$tmax-predict(loess.tmax,newdata=ket$date$yday)
+
+plot(ket$date,ket$tmax.yrdt)abline(h=0,col=2)
+abline(h=0,col=2)
+
+# function to make a running sum of x (e.g. precip) for l days before each day.  To detect droughts.
+prev.cum<-function(x,l){
+	z <- array(NA,length(x)-l)
+	for(i in 1:(length(x)-l)){
+		z[i] <- sum(x[i:(l+i)],na.rm=T)
+		}
+	return(z)
+	}
+
+##use 10-day periods starting from day 1.  
+#days from first to last lines
+ket$date[length(ket$date)]-ket$date[1]
+# Time difference of 11322 days
+n10<-as.integer(floor((ket$date[length(ket$date)]-ket$date[1])/10))
+
+# put 10-day periods into a series over the years
+library(lubridate)
+num.year <- max(ket$date$year)-min(ket$date$year)+1
+ket.a10<-data.frame(
+p10=1:n10,
+start.date=as.POSIXlt(array(NA,n10)),
+tmin=array(NA,n10),
+tmax=array(NA,n10),
+tave=array(NA,n10),
+precip=array(NA,n10),
+humidity=array(NA,n10),
+sunshine=array(NA,n10),
+wind_vel=array(NA,n10),
+wind_dir=array(NA,n10),
+max_gust=array(NA,n10),
+max_gust_dir=array(NA,n10)
+)
+
+#thresh=number of observations needed in 10-day period to count
+thresht <-6 #for temperature and others
+threshp <- 8 #for precip
+for(i in 1:n10){
+	dm <-as.Date(ket$date[1])+(i*10)-10
+	ket.a10$start.date[i] <- dm
+	#tmin
+	tmin.in<-ket$tmin[ket$date>=as.Date(dm) & ket$date<=as.Date(dm)+9]
+	tmin.in<-tmin.in[!is.na(tmin.in)]  # remove NAs
+	if(length(tmin.in)<thresht){
+		ket.a10$tmin[i]<-NA
+		} else {
+		ket.a10$tmin[i] <- mean(tmin.in)
+		}
+	#tmax
+	tmax.in<-ket$tmax[ket$date>=as.Date(dm) & ket$date<=as.Date(dm)+9]
+	tmax.in<-tmax.in[!is.na(tmax.in)]  # remove NAs
+	if(length(tmax.in)<thresht){
+		ket.a10$tmax[i]<-NA
+		} else {
+		ket.a10$tmax[i] <- mean(tmax.in)
+		}
+	#tave
+	tave.in<-ket$tave[ket$date>=as.Date(dm) & ket$date<=as.Date(dm)+9]
+	tave.in<-tave.in[!is.na(tave.in)]  # remove NAs
+	if(length(tave.in)<thresht){
+		ket.a10$tave[i]<-NA
+		} else {
+		ket.a10$tave[i] <- mean(tave.in)
+		}
+		tmin.in<-ket$tmin[ket$date>=as.Date(dm) & ket$date<=as.Date(dm)+9]
+	#precip
+	precip.in<-ket$precip[ket$date>=as.Date(dm) & ket$date<=as.Date(dm)+9]
+	precip.in<-precip.in[!is.na(precip.in)]  # remove NAs
+	if(length(precip.in)<threshp){
+		ket.a10$precip[i]<-NA
+		} else {
+		if(length(precip.in)<10){  
+			#if a few days have missing values, use average for the period.
+			ket.a10$precip[i] <- (10-length(precip.in))*(sum(precip.in)/length(precip.in))+sum(precip.in)
+			} else {
+			ket.a10$precip[i] <- sum(precip.in)
+			}
+		}
+	#humidity
+	humidity.in<-ket$humidity[ket$date>=as.Date(dm) & ket$date<=as.Date(dm)+9]
+	humidity.in<-humidity.in[!is.na(humidity.in)]  # remove NAs
+	if(length(humidity.in)<thresht){
+		ket.a10$humidity[i]<-NA
+		} else {
+		ket.a10$humidity[i] <- mean(humidity.in)
+		}
+	#sunshine
+	sunshine.in<-ket$sunshine[ket$date>=as.Date(dm) & ket$date<=as.Date(dm)+9]
+	sunshine.in<-sunshine.in[!is.na(sunshine.in)]  # remove NAs
+	if(length(sunshine.in)<thresht){
+		ket.a10$sunshine[i]<-NA
+		} else {
+		ket.a10$sunshine[i] <- mean(sunshine.in)
+		}
+	#wind_vel
+	wind.vel.in<-ket$wind_vel[ket$date>=as.Date(dm) & ket$date<=as.Date(dm)+9]
+	wind.vel.in<-wind.vel.in[!is.na(wind.vel.in)]  # remove NAs
+	if(length(wind.vel.in)<thresht){
+		ket.a10$wind_vel[i]<-NA
+		} else {
+		ket.a10$wind_vel[i] <- mean(wind.vel.in)
+		}
+	#wind_dir (modal)
+	wind.dir.in<-ket$wind_dir[ket$date>=as.Date(dm) & ket$date<=as.Date(dm)+9]
+	wind.dir.in<-wind.dir.in[!is.na(wind.dir.in)]  # remove NAs
+	if(length(wind.dir.in)<thresht){
+		ket.a10$wind_dir[i]<-NA
+		} else {
+		ket.a10$wind_dir[i] <- as.character(names(sort(table(wind.dir.in),decreasing=TRUE)[1]))
+		}
+	#max_gust (maximum) and direction of that gust
+	max.gust.in<-ket$max_gust[ket$date>=as.Date(dm) & ket$date<=as.Date(dm)+9]
+	max.gust.dir.in<-ket$max_gust_dir[ket$date>=as.Date(dm) & ket$date<=as.Date(dm)+9]
+	max.gust.in<-max.gust.in[!is.na(max.gust.in)]  # remove NAs
+	max.gust.dir.in<-max.gust.dir.in[!is.na(max.gust.in)]  # remove NAs
+	if(length(max.gust.in)<thresht){
+		ket.a10$max_gust[i]<-NA
+		ket.a10$max_gust_dir[1]<-NA
+		} else {
+		ket.a10$max_gust[i] <- max(max.gust.in)
+		loc<-order(max.gust.in,decreasing=T)[1]
+		ket.a10$max_gust_dir[i] <- max.gust.dir.in[loc]
+		}
+
+	}
+
+ket.a10$start.date <-as.POSIXct(ket.a10$start.date)
+write.csv(ket.a10,"ketapang-10day.csv")
+
+#make a page of line plots
+nf<-layout(matrix(1:4,nrow=4,ncol=1), heights=c(3,1,1,1))
+layout.show(nf)
+par(oma=c(3,0,0,0),mar=c(0,3,1,2))
+plot(type="n",x=ket.a10$start.date,y=ket.a10$tmin,xlim=c(as.POSIXct("1986/01/01"),as.POSIXct("2017/01/01")),ylim=c(22,33.5),axes=F)
+axis(side=1,at=seq(as.POSIXct("1985/01/01"),as.POSIXct("2017/01/01"),"5 years"),tick=T,labels=F)
+axis(side=2,labels=T)
+mtext("°C",side=2,line=2)
+mtext("Ketapang; minimum, average, and maximum daily temperatures; 10-day averages",side=3,line=-1)
+
+lines(x=ket.a10$start.date,y=ket.a10$tmin,xlab="",col="magenta",lty=1,lwd=0.5)
+lines(x=ket.a10$start.date,y=ket.a10$tmax,col="magenta",lty=1,lwd=0.5)
+lines(x=ket.a10$start.date,y=ket.a10$tave,col="black",lty=1,lwd=0.5)
+abline(h=seq(24,32,2), lty=3, lwd=0.5)
+
+plot(type="n",x=ket.a10$start.date,y=ket.a10$precip,xlim=c(as.POSIXct("1986/01/01"),as.POSIXct("2017/01/01")),axes=F)
+axis(side=1,at=seq(as.POSIXct("1985/01/01"),as.POSIXct("2017/01/01"),"5 years"),tick=T,labels=F)
+axis(side=2,labels=T)
+mtext("mm",side=2,line=2)
+lines(x=ket.a10$start.date,y=ket.a10$precip,type="l",col="blue",lty=1,lwd=0.5)
+mtext("Precipitation",side=3,line=-1)
+
+plot(type="n",x=ket.a10$start.date,y=ket.a10$humidity,xlim=c(as.POSIXct("1986/01/01"),as.POSIXct("2017/01/01")),axes=F)
+axis(side=1,at=seq(as.POSIXct("1985/01/01"),as.POSIXct("2017/01/01"),"5 years"),tick=T,labels=F)
+axis(side=2,labels=T)
+mtext("percent",side=2,line=2)
+lines(x=ket.a10$start.date,y=ket.a10$humidity,type="l",col="green",lty=1,lwd=0.5)
+mtext("Humidity",side=3,line=-1)
+
+plot(type="n",x=ket.a10$start.date,y=ket.a10$sunshine,xlim=c(as.POSIXct("1986/01/01"),as.POSIXct("2017/01/01")),axes=F)
+axis(side=1,at=seq(as.POSIXct("1985/01/01"),as.POSIXct("2017/01/01"),"5 years"),tick=T,labels=c("1985","1990","1995","2000","2005","2010","2015"))
+axis(side=2,labels=T)
+mtext("hours",side=2,line=2)
+lines(x=ket.a10$start.date,y=ket.a10$sunshine,type="l",col="orange",lty=1,lwd=0.5)
+mtext("Sunshine (hours)",side=3,line=-1)
+
+###Wind plots: wind_vel, wind_dir, max_gust, max_gust_dir
+bearings <-c("NE","E","SE","S","SW","W","NW","N")
+dirs<-array(NA,n10)
+for(i in 1:n10){
+	if(is.na(ket.a10$wind_dir[i])){
+		dirs[i]<-NA
+		} else {
+		dirs[i]<-which(bearings==trimws(ket.a10$wind_dir[i]))
+		}
+	}
+
+
+nf<-layout(matrix(1:4,nrow=4,ncol=1), heights=c(1,1,1,1))
+layout.show(nf)
+par(oma=c(3,0,0,0),mar=c(2,3,1,2))
+
+plot(type="n",x=ket.a10$start.date,y=ket.a10$wind_vel,xlim=c(as.POSIXct("1986/01/01"),as.POSIXct("2017/01/01")),axes=F)
+axis(side=1,at=seq(as.POSIXct("1985/01/01"),as.POSIXct("2017/01/01"),"5 years"),tick=T,labels=F)
+axis(side=2,labels=T)
+mtext("mm",side=2,line=2)
+lines(x=ket.a10$start.date,y=ket.a10$wind_vel,type="l",col="blue",lty=1,lwd=0.5)
+mtext("Mean wind velocity (10-day averages)",side=3,line=0)
+
+plot(type="n",x=ket.a10$start.date,y=ket.a10$wind_dir,ylim=c(1,8),xlim=c(as.POSIXct("1986/01/01"),as.POSIXct("2017/01/01")),axes=F)
+axis(side=1,at=seq(as.POSIXct("1985/01/01"),as.POSIXct("2017/01/01"),"5 years"),tick=T,labels=F)
+axis(side=2, at=1:8, tick=T, labels=c("NE","E","SE","S","SW","W","NW","N"))
+mtext("modal direction",side=2,line=2)
+points(x=ket.a10$start.date,y=dirs,col="blue",lty=1,lwd=0.5)
+mtext("Modal wind direction (10-day periods)",side=3,line=0)
+
+plot(type="n",x=ket.a10$start.date,y=ket.a10$max_gust,xlim=c(as.POSIXct("1986/01/01"),as.POSIXct("2017/01/01")),axes=F)
+axis(side=1,at=seq(as.POSIXct("1985/01/01"),as.POSIXct("2017/01/01"),"5 years"),tick=T,labels=F)
+axis(side=2,labels=T)
+mtext("mm",side=2,line=2)
+lines(x=ket.a10$start.date,y=ket.a10$max_gust,type="l",col="blue",lty=1,lwd=0.5)
+mtext("Max wind gust velocity (10-day periods)",side=3,line=0)
+
+plot(type="n",x=ket.a10$start.date,y=ket.a10$max_gust_dir,xlim=c(as.POSIXct("1986/01/01"),as.POSIXct("2017/01/01")),ylim=c(0,360),axes=F)
+axis(side=1,at=seq(as.POSIXct("1985/01/01"),as.POSIXct("2017/01/01"),"5 years"),tick=T,labels=c("1985","1990","1995","2000","2005","2010","2015"))
+axis(side=2, tick=T)
+mtext("modal direction",side=2,line=2)
+points(x=ket.a10$start.date,y=ket.a10$max_gust_dir,col="blue",lty=1,lwd=0.5)
+mtext("Max wind gust direction (10-day periods)",side=3,line=0)
+
+
+#scatter plots by day of year (seasonal cycles)
+par(mfrow=c(1,3))
+par(oma=c(1,1,0,0),mar=c(4,4,1,1))
+
+plot(yday(ket.a10$start.date),ket.a10$tmax,xlab="day of the year",ylab="maximum temperature; 10-day average")
+t<-loess(ket.a10$tmax~yday(ket.a10$start.date),span=0.12)
+lines(1:365,predict(t,newdata=1:365),col=2,lty=1,lwd=2)
+
+plot(yday(ket.a10$start.date),ket.a10$tave,xlab="day of the year",ylab="average temperature; 10-day average",main="Ketapang, 10-day average temperatures, 1986-2016")
+t<-loess(ket.a10$tave~yday(ket.a10$start.date),span=0.12)
+lines(1:365,predict(t,newdata=1:365),col=2,lty=1,lwd=2)
+
+plot(yday(ket.a10$start.date),ket.a10$tmin,xlab="day of the year",ylab="minimum temperature; 10-day average")
+t<-loess(ket.a10$tmin~yday(ket.a10$start.date),span=0.12)
+lines(1:365,predict(t,newdata=1:365),col=2,lty=1,lwd=2)
+
+par(mfrow=c(1,3))
+plot(yday(ket.a10$start.date),ket.a10$precip,xlab="day of the year",ylab="average precipitation; 10-day sum",main="Ketapang, 10-day average climatology, 1986-2016")
+t<-loess(ket.a10$precip~yday(ket.a10$start.date),span=0.12)
+lines(1:365,predict(t,newdata=1:365),col=2,lty=1,lwd=2)
+
+plot(yday(ket.a10$start.date),ket.a10$humidity,xlab="day of the year",ylab="Humidity; 10-day average")
+t<-loess(ket.a10$humidity~yday(ket.a10$start.date),span=0.12)
+lines(1:365,predict(t,newdata=1:365),col=2,lty=1,lwd=2)
+
+plot(yday(ket.a10$start.date),ket.a10$sunshine,xlab="day of the year",ylab="Hours sunshine; 10-day average")
+t<-loess(ket.a10$sunshine~yday(ket.a10$start.date),span=0.12)
+lines(1:365,predict(t,newdata=1:365),col=2,lty=1,lwd=2)
+
+#wind speed and direction
+par(mfrow=c(1,2))
+par(oma=c(1,1,0,0),mar=c(4,4,1,1))
+
+plot(yday(ket.a10$start.date),ket.a10$wind_vel,xlab="day of the year",ylab="average wind velocity; 10-day average",main="Ketapang, 10-day average climatology, 1986-2016")
+t<-loess(ket.a10$wind_vel~yday(ket.a10$start.date),span=0.12)
+lines(1:365,predict(t,newdata=1:365),col=2,lty=1,lwd=2)
+
+plot(yday(ket.a10$start.date)[year(ket.a10$start.date)>2008],dirs[year(ket.a10$start.date)>2008],axes=F,main="Wind direction, 2009-2017",xlab="day of the year")
+axis(side=1, at=seq(0,300,100),tick=T)
+axis(side=2, at=1:8, labels=c("NE","E","SE","S","SW","W","NW","N"),tick=T)
+t<-loess(dirs[year(ket.a10$start.date)>2008]~yday(ket.a10$start.date)[year(ket.a10$start.date)>2008],span=0.12)
+lines(1:365,predict(t,newdata=1:365),col=2,lty=1,lwd=2)
+
+#max gust speed and direction
+par(mfrow=c(1,2))
+par(oma=c(1,1,0,0),mar=c(4,4,1,1))
+
+plot(yday(ket.a10$start.date),ket.a10$max_gust,xlab="day of the year",ylab="max wind gust; 10-day periods")
+t<-loess(ket.a10$max_gust~yday(ket.a10$start.date),span=0.12)
+lines(1:365,predict(t,newdata=1:365),col=2,lty=1,lwd=2)
+
+plot(yday(ket.a10$start.date),ket.a10$max_gust_dir,main="Gust direction",xlab="day of the year")
+t<-loess(ket.a10$max_gust_dir~yday(ket.a10$start.date),span=0.12)
+lines(1:365,predict(t,newdata=1:365),col=2,lty=1,lwd=2)
+
+#######
+##dry periods.  Find longest periods with less than X mm of precip over the period.
+maxp <- 20
+
+interv<-matrix(NA,length(ket$date),3)
+r<-1
+for(i in 1:(length(ket$date)-1)){
+	if(!is.na(ket$precip[i])){
+		s <- ket$precip[i]
+		k<-i
+		repeat{
+			k<-k+1
+			if(!is.na(ket$precip[k])){
+				s <- s+ket$precip[k]
+				}
+			if(s>maxp | k>length(ket$precip)){
+				interv[r,1]<-i
+				interv[r,2]<-k-1
+				r<-r+1
+				break
+				}
+			}
+		}
+	}
+
+#dry=array of day indices, starting drought periods, ranked longest to shortest
+lens<-interv[,2]-interv[,1]
+dry1<-interv[order(lens,decreasing=T),1]
+dry2<-interv[order(lens,decreasing=T),2]
+
+#extract the top 50 non-overlapping droughts
+top.dry<-matrix(NA,50,2)
+used <- rep(FALSE,length(dry1))  # used=days already in a drought period
+d <- 1
+for(event in 1:50){
+	repeat{
+		if(any(used[dry1[d]:dry2[d]])){
+			#don't use this interval, try next interval
+			d<-d+1
+			} else {
+			top.dry[event,] <- c(dry1[d],dry2[d])
+			used[dry1[d]:dry2[d]]<-TRUE
+			d<-d+1
+			break
+			}
+		}
+	}
+		
+
+x<-ket$date[top.dry[,1]]
+y<-top.dry[,2]-top.dry[,1]
+plot(x,y,ylab="Number of days")
+plot(x$yday,y,ylab="Number of days")
+
+lm(y~top.dry[,1])
+
+
+

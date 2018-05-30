@@ -1,0 +1,79 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+First, test to see if we can subset out only fire detections that are within a certain distance of the Ketapang airport. For now, model the distance around the airport as a square (and then later, plot them and cut out the ones that are not within a circular buffer). 
+
+For a 500 km buffer, the maximum latitudes are approximately 6.5 S and 2.7 N; the maximum longitudes are approximately 105 E and 115 E. 
+```{r}
+x<-read.table("/Volumes/Samsung USB/BORNEO/MODIS/mcd14ml/MCD14ML.200011.006.01.txt",header=T)
+
+# make an empty variable to store the data in
+detections_500km<-data.frame(YYYYMMD=integer(),HHMM=integer(),sat=logical(),lat=numeric(),lon=numeric(),T21=numeric(),T31=numeric(),
+                 sample=integer(),FRP=numeric(),conf=integer(),type=integer())
+     
+# (square) 500 km buffer around Ketapang airport is approximately 105E to 115E; 6.5S to 2.7N
+# subset out only the data points that are within this rangae 
+tmp<-subset(x,(x$lat>-6.5 & x$lat<2.7) & (x$lon>105 & x$lon<115))
+
+# then append the fire detections from the current file to the new combined list 
+detections_500km<-rbind(detections_500km,tmp)
+
+x<-read.table("/Volumes/Samsung USB/BORNEO/MODIS/mcd14ml/MCD14ML.200012.006.01.txt",header=T)
+
+tmp<-subset(x,(x$lat>-6.5 & x$lat<2.7) & (x$lon>105 & x$lon<115))
+
+detections_500km<-rbind(detections_500km,tmp)
+```
+
+And it works! At least for just two files. So now we need to loop through every file in the folder to do this. But first, try it with not as many files in a folder. 
+```{r}
+path<-"/Volumes/Samsung USB/BORNEO/MODIS/test/"
+
+# make an empty variable to store the data in
+detections_500km<-data.frame(YYYYMMD=integer(),HHMM=integer(),sat=logical(),lat=numeric(),lon=numeric(),T21=numeric(),T31=numeric(),
+                 sample=integer(),FRP=numeric(),conf=integer(),type=integer())
+
+# list of all of the file names
+file.names <- dir(path, pattern =".txt")
+
+# then the for loop and then also do the subset
+for(i in 1:length(file.names)){
+  file <- read.table(paste(path,file.names[i],sep=""),header=TRUE, sep="")
+  tmp<-subset(file,(file$lat>-6.5 & file$lat<2.7) & (file$lon>105 & file$lon<115))
+  detections_500km<-rbind(detections_500km,tmp)
+}
+
+write.table(detections_500km, file = "/Volumes/Samsung USB/BORNEO/MODIS/test.txt",sep=" ",row.names = FALSE)
+```
+Hooray!!! Success! Now try it with all of the files! 
+
+All of the files!
+```{r}
+path<-"/Volumes/Samsung USB/BORNEO/MODIS/mcd14ml/"
+
+# make an empty variable to store the data in
+detections_500km<-data.frame(YYYYMMD=integer(),HHMM=integer(),sat=logical(),lat=numeric(),lon=numeric(),T21=numeric(),T31=numeric(),
+                 sample=integer(),FRP=numeric(),conf=integer(),type=integer())
+
+# list of all of the file names
+file.names <- dir(path, pattern =".txt")
+
+# then the for loop and then also do the subset
+for(i in 1:length(file.names)){
+  file <- read.table(paste(path,file.names[i],sep=""),header=TRUE, sep="")
+  tmp<-subset(file,(file$lat>-6.5 & file$lat<2.7) & (file$lon>105 & file$lon<115))
+  detections_500km<-rbind(detections_500km,tmp)
+}
+
+write.table(detections_500km, file = "/Volumes/Samsung USB/BORNEO/MODIS/mcd14ml_KTG_500km.txt",sep=" ",row.names = FALSE)
+```
+And it worked! 
+
+Now read it in to check it out. 
+```{r}
+firedetections_500km<-read.table("/Volumes/Samsung USB/BORNEO/MODIS/mcd14ml_KTG_500km.txt",header=T,sep=" ")
+```
+
+Then, to go to smaller and smaller distances from the airport, we can just pull things out of the 500km file instead of having to loop through everything again. 

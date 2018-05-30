@@ -1,0 +1,73 @@
+---
+title: 'Ketapang Climate Fire Plotting by Fire Type '
+output:
+  html_document: default
+  pdf_document: default
+---
+
+Some code that plays around with visualzing what types of fire are where in the 500 km radius around Ketapang. 
+Read in the necessary libraries, and make a mini-function to read in the dates as actual dates. 
+
+```{r}
+# the libraries
+library(sp)
+library(GISTools)
+library(rgdal)
+
+# the mini function to read in dates in the format we want
+setClass('yyyymmdd')
+setAs("character","yyyymmdd", function(from) as.Date(from, format="%Y%m%d"))
+```
+
+
+Read in country boundaries.
+```{r}
+## NOTE: if we want better looking (i.e., more accurate) country boundaries, use this shapefile instead (and the rest of the code will still work fine)
+countries<-readOGR(dsn="/Users/laurenhendricks/Documents/GIS_Data/ne_10m_admin_0_map_units/",layer="ne_10m_admin_0_map_units")
+
+# subset out Indonesia, Malaysia, and Brunei
+SEAsia<-countries[countries$SOVEREIGNT=="Indonesia"|countries$SOVEREIGNT=="Malaysia"|countries$SOVEREIGNT=="Brunei",]
+
+# plot it to make sure it works properly 
+plot(SEAsia)
+
+# reproject it UTM 49 S (CRS from http://spatialreference.org/ref/epsg/23889/)
+SEAsia_proj<-spTransform(SEAsia,"+proj=utm +zone=49 +south +a=6378160 +b=6356774.50408554 +units=m +no_defs")
+
+# plot it again to make sure things still look good
+plot(SEAsia_proj)
+```
+Now for the fires. 
+```{r}
+# read in the data
+detections_500km<-read.table("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/mcd14ml_KTG_500km.txt",sep=" ",header = T,colClasses = c("yyyymmdd","character","factor","numeric","numeric","numeric","numeric","integer","numeric","integer","factor"))
+
+# make it spatial 
+detections_500km_sp<-SpatialPointsDataFrame(cbind(detections_500km$lon,detections_500km$lat),detections_500km,proj4string = CRS("+proj=longlat +ellps=WGS84"))
+
+# project the data                                          
+detections_500km_sp_proj<-spTransform(detections_500km_sp,"+proj=utm +zone=49 +south +a=6378160 +b=6356774.50408554 +units=m +no_defs")
+
+# plot it to check and make sure it worked
+plot(SEAsia_proj)
+plot(detections_500km_sp_proj,add=T)
+```
+Something to think about is that this MODIS product classifies things by type. The options are: 0 = presumed vegetation fire; 1 = active volcano;
+2 = other static land source; 3 = offshore. It'd be useful to know how many of each type there are in this data set. 
+
+Now subset out by fire type and then plot them in different colors. 
+```{r}
+detections_500km_sp_proj_veg<-detections_500km_sp_proj[detections_500km_sp_proj$type==0,]
+detections_500km_sp_proj_volcano<-detections_500km_sp_proj[detections_500km_sp_proj$type==1,]
+detections_500km_sp_proj_other<-detections_500km_sp_proj[detections_500km_sp_proj$type==2,]
+detections_500km_sp_proj_offshore<-detections_500km_sp_proj[detections_500km_sp_proj$type==3,]
+
+# plot it to check and make sure it worked
+plot(SEAsia_proj)
+plot(detections_500km_sp_proj_veg,add=T,col="green")
+plot(detections_500km_sp_proj_volcano,add=T,col="blue")
+plot(detections_500km_sp_proj_other,add=T,col="yellow")
+plot(detections_500km_sp_proj_offshore,add=T,col="red")
+
+```
+

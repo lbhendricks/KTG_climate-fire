@@ -1,0 +1,37 @@
+---
+title: "R Notebook"
+output: pdf_document
+---
+```{r}
+detections_500km<-read.table("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/FireDetectionExtract_v2_DataArchive/mcd14ml_KTG_500km_raw.txt",header=T,sep=" ")
+print(paste(length(detections_500km$YYYYMMDD),"fire detections within a 1000km box of KTG"))
+
+detections_500km_c<-read.table("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/FireDetectionExtract_v2_DataArchive/mcd14ml_KTG_500km.txt",header=T,sep=" ")
+print(paste(length(detections_500km_c$YYYYMMDD),"fire detections within a 500km radius of KTG"))
+```
+
+```{r}
+detections_250km<-read.table("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/FireDetectionExtract_v2_DataArchive/mcd14ml_KTG_250km_raw.txt",header=T,sep=" ")
+print(paste(length(detections_250km$YYYYMMDD),"fire detections within a 500km box of KTG"))
+
+detections_250km_c<-read.table("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/FireDetectionExtract_v2_DataArchive/mcd14ml_KTG_250km.txt",header=T,sep=" ")
+print(paste(length(detections_250km_c$YYYYMMDD),"fire detections within a 250km radius of KTG"))
+```
+
+```{r}
+detections_50km<-read.table("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/FireDetectionExtract_v2_DataArchive/mcd14ml_KTG_50km_raw.txt",header=T,sep=" ")
+print(paste(length(detections_50km$YYYYMMDD),"fire detections within a 100km box of KTG"))
+
+detections_50km_c<-read.table("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/FireDetectionExtract_v2_DataArchive/mcd14ml_KTG_50km.txt",header=T,sep=" ")
+print(paste(length(detections_50km_c$YYYYMMDD),"fire detections within a 50km radius of KTG"))
+```
+
+```{r}
+detections_5km<-read.table("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/FireDetectionExtract_v2_DataArchive/mcd14ml_KTG_5km_raw.txt",header=T,sep=" ")
+print(paste(length(detections_5km$YYYYMMDD),"fire detections within a 10km box of KTG"))
+
+detections_5km_c<-read.table("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/FireDetectionExtract_v2_DataArchive/mcd14ml_KTG_5km.txt",header=T,sep=" ")
+print(paste(length(detections_5km_c$YYYYMMDD),"fire detections within a 5km radius of KTG"))
+
+```
+

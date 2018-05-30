@@ -1,0 +1,749 @@
+---
+title: "Modeling Evapotranspiration from Weather Data"
+output: html_notebook
+---
+# Prepare to process the data 
+## Background and Functions
+
+Beginning information from original Dobrowski et al 2013 appendix code:
+
+ This script contains 4 functions used to model ET0 and water balance:
+1. 'snowmod' estimates snowfall and snowpack and net moisture input as a function of temperature, precip, and existing snowpack.  It also outputs a vector of albedo values, generally 0.2 if there is no snow, or 0.8 if there is snow.
+2. 'monthlyETO' for calculating monthly reference evapotranspiration
+3. 'dailyET0' for calculating daily reference evapotranspiration
+4. 'aetmod' estimates actual et [evapotranspiration], deficit, soil moisture and runoff as a function of moisture input, existing soil moisture, and soil water capacity.
+
+Author: Alan Swanson 2012
+
+The third equation, daily ET0, is the one we are most interested in for the Ketapang climate data. The original code:
+```{r}
+dailyET0_Dobrowski <- function(radiation,tmax,tmin,wind,lat,elev,albedo=0.23,dpt,doy){
+  # This is a ET0 function designed for daily inputs.  
+  # Arguments:
+  # radiation: vector of monthly average shortwave radiation in MJ/m^2/day
+  # tmax, tmin: vectors of monthly average maximum and minimum temperatures in C, 
+  # wind: vector of monthly average wind speed in m/s, 
+  # tmean_prev: vector of mean temp for the previous month, 
+  # lat: vector of latitude in degrees 
+  # elev: vector of elevation in meters, 
+  # albedo: scaler or vector of albedo values, 
+  # doy: scalar day of year 1-365,
+  # dpt: vector of dewpoint temperature in C.
+
+  #
+  # Value: 
+  # Returns a vector of ET0 values.
+	tmean <- (tmin+tmax)/2
+	n_days <- 1 
+	G <- 0 # assume soil heat flux to be zero
+	
+	# wind adjustment to 2m from 10m output
+	hw=10 # height at which wind is measured
+  wind <- wind*(4.87/log(67*hw-5.42))  
+  
+  # stomatal conductance adjustment for low temperatures
+  sr=100 # stomatal resistance sec/m
+	ks_min=.01 # minimum value for temps below T1
+	Tl=-10       # minimum temp (sc goes to ks_min below this temp)
+	T0=5		# optimal temp
+	Th=100     # maximum temp (sc goes to zero above this)
+	thresh=5   # temperature threshold below which to apply Jarvis equation (ks=1 above this temp)
+	b4=(Th-T0)/(Th-Tl)  # from Jarvis 1978
+	b3=1/((T0-Tl)*(Th-T0)^b4)
+	ks=pmax(pmin(b3*(tmean-Tl)*(Th-tmean)^b4,1),ks_min)
+	ks[is.na(ks)] <- ks_min
+	ks[tmean>=thresh] <- 1
+		
+	# convert to stomatal resistance.
+	sr <- sr/ks
+		
+	# ra is aerodynamic resistance, rs is bulk surface resistance
+	ra <- 208/wind # 
+	rs <- sr/(0.5*24*0.12) # value of 70 when sr=100
+	
+	# Saturation vapor pressure , 
+	es <- 0.6108*exp(tmin*17.27/(tmin+237.3))/2+0.6108*exp(tmax*17.27/(tmax+237.3))/2  # saturation vapor pressure
+	ea <- 0.6108*exp((dpt)*17.27/((dpt)+237.3))                                        # actual vapor pressure
+	vpd <- es - ea
+	vpd[vpd<0] <- 0    
+  
+	# delta - Slope of the saturation vapor pressure vs. air temperature curve
+	delta <- (4098 * es)/(tmean + 237.3)^2  
+	P <- 101.3*((293-0.0065*elev)/293)^5.26  # Barometric pressure in kPa
+	lambda <- 2.501-2.361e-3*tmean # latent heat of vaporization    
+	cp <- 1.013*10^-3 # specific heat of air
+	gamma <- cp*P/(0.622*lambda) # Psychrometer constant (kPa C-1)
+	pa <- P/(1.01*(tmean+273)*0.287) # mean air density at constant pressure
+	
+	# Calculate potential max solar radiation or clear sky radiation.
+	GSC = 0.082      # MJ m -2 min-1 (solar constant)
+	phi <- pi*lat/180 
+	dr <- 1+0.033*cos(2*pi/365*doy)      
+	delt <- 0.409*sin(2*pi/365*doy-1.39)     
+	omegas <- acos(-tan(phi)*tan(delt))     
+	Ra <- 24*60/pi*GSC*dr*(omegas*sin(phi)*sin(delt) +cos(phi)*cos(delt)*sin(omegas)) # daily extraterrestrial radiation
+	Rso <- Ra*(0.75+2e-5*elev)     #For a cloudless day, Rs is roughly 75% of extraterrestrial radiation (Ra)
+
+	# radfraction is a measure of relative shortwave radiation, or of
+	# possible radiation (cloudy vs. clear-sky), needs to be less than 1
+	radfraction <- radiation/Rso
+	radfraction[radfraction>1] <- 1
+	
+	# longwave radiation
+	longw <- 4.903e-9*n_days*((tmax+273.15)^4+(tmin+273.15)^4)/2*(.34-.14*sqrt(ea))*(1.35*radfraction-.35)     
+	
+  # net radiation
+	netrad <- radiation*n_days*(1-albedo)-longw     
+	
+	# ET from long-form P-M eqn.
+	et0 <- .408*((delta*(netrad-G))+(pa*cp*vpd/ra*3600*24*n_days))/(delta+gamma*(1+rs/ra))
+	return(et0)
+} 
+```
+
+Dan also made a new version of the daily ET0 function. Add it also so we can compare the results. USE THIS ONE INSTEAD!!
+```{r}
+dailyET0 <- function(lat,elev,psun,wind,doy,tmax,tmin,rh){
+	# This is a ET0 function designed for daily inputs.  
+  
+  # Arguments:
+  # psun: vector of daily percent sunshine
+  # tmax, tmin: vectors of monthly average maximum and minimum temperatures in C, 
+  # wind: vector of monthly average wind speed in m/s, 
+  # tmean_prev: vector of mean temp for the previous month, 
+  # lat: vector of latitude in degrees 
+  # elev: vector of elevation in meters, 
+  # rh: vector of relative humidity (mean daily).
+  # tmean_prev: vector of mean temp of previous month in C
+  # albedo: scaler or vector of albedo values, 
+  # doy: scalar day of year 1-365,
+  # Value: 
+  # Returns a vector of ET0 values.
+  
+#some constants
+n_days = 1
+GSC = 0.082      # MJ/m2/min (solar constant)
+albedo = 0.23 #(hypothetical grass reference crop)
+G <- 0 # assume soil heat flux to be zero
+hw=5 # height at which wind is measured
+cp <- 1.013*10^-3 # specific heat of air
+
+# Step 1	
+  tmean <- (tmin+tmax)/2
+  lambda <- 2.501-2.361e-3*tmean # latent heat of vaporization    
+
+# Step 2: Mean daily solar radiation (Rs in units MJ/m2/day). See Step 12.  Nothing needed here.
+
+# Step 3: wind adjustment to 2m from 10m measurements
+  wind <- wind*(4.87/log(67*hw-5.42))  
+  
+# Step 10: Mean saturation vapor pressure (es)
+	es <- 0.6108*exp(tmin*17.27/(tmin+237.3))/2+0.6108*exp(tmax*17.27/(tmax+237.3))/2  # saturation vapor pressure
+# Step 4: Slope of the saturation vapor pressure vs. air temperature curve (delta)
+  	delta <- (4098 * es)/(tmean + 237.3)^2  
+
+# Step 5: Atmospheric Pressure (P)
+	P <- 101.3*((293-0.0065*elev)/293)^5.26  # Barometric pressure in kPa
+
+# Step 6: Psychrometric constant (gamma)
+	gmma <- cp*P/(0.622*lambda) # Psychrometer constant (kPa C-1)
+
+#Step 7: Delta Term (dt) (auxiliary calculation for Radiation Term)
+	dt <- delta/(delta+gmma*(1+0.34*wind))
+
+# Step 8: Psi Term (pt) auxiliary calculation for Wind Term.
+	pt <- gmma/(delta+gmma*(1+0.34*wind))
+	
+# Step 9: Temperature Term (auxiliary calculation for Wind Term)
+	tt <- (900/(tmean+273))*wind
+
+# Step 11: actual vapor pressure (ea)
+	ea <- (rh/100)*(0.6108*exp(tmin*17.27/(tmin+237.3))+0.6108*exp(tmax*17.27/(tmax+237.3)))/2
+	vpd <- es - ea
+	vpd[vpd<0] <- 0    
+
+# Step 12: The inverse relative distance Earth-Sun (dr) and solar declination (delt)
+	# Calculate potential max solar radiation or clear sky radiation.
+	dr <- 1+0.033*cos(2*pi/365*doy)      
+	delt <- 0.409*sin(2*pi/365*doy-1.39)
+
+# Step 13: Convert latitude to radians (phi)
+	phi <- pi*lat/180 
+
+# Step 14: Sunset hour angle (ws)
+	omegas <- acos(-tan(phi)*tan(delt))
+
+# Step 15: Daily extraterrestrial radiation (Ra)
+	Ra <- 24*60/pi*GSC*dr*(omegas*sin(phi)*sin(delt) +cos(phi)*cos(delt)*sin(omegas))
+
+# Step 16: Clear sky solar radiation (Rso). Rs is fraction of Rso
+	Rso <- Ra*(0.75+2e-5*elev)     #For a cloudless day, Rs is roughly 75% of extraterrestrial radiation (Ra)
+	# radfraction is a measure of relative shortwave radiation, needs to be less than 1
+	radfraction <- psun
+	radfraction[radfraction>1] <- 1
+	Rs<-Rso*radfraction
+
+# Step 17: Net solar or net shortwave radiation (Rns).  
+	Rns  <- (1-albedo)*Rs
+
+# Step 18: Net outgoing longwave solar radiation (Rnl)
+	Rnl <- 4.903e-9*n_days*((tmax+273.15)^4+(tmin+273.15)^4)/2*(.34-.14*sqrt(ea))*(1.35*radfraction-.35)     
+
+# Step 19: Net radiation (Rn)
+	Rn <- Rns*n_days-Rnl     
+
+# Final step
+# Radiation term.  (0.408*Rn) is net radiation expressed in equivalent of evaporation (mm)	
+	ETrad <- dt*0.408*Rn
+# Wind term (ETwind)	
+	ETwind <- pt * tt*(es-ea)
+
+et0 <- ETwind + ETrad
+
+return(data.frame(ETwind=ETwind,ETrad=ETrad,et0=et0))
+}
+```
+
+And to calculate the soil water deficit, we need to use the fourth equation from Dobrowski et al. We already have the reference evapotranspiration, calculated in the previous function. We also have the monthly water input, and it's already in the correct units (mm): precipiation. The function calls for soil water content from the previous month (day), but it will still function if it is left out.
+```{r}
+aetmod_Dobrowski <- function(et0,input,awc,soil_prev=NULL){
+  # This function computes AET given ET0, H2O input, soil water capacity, and beginning-of-month soil moisture
+  # Arguments:
+  # et0: vector of monthly reference evapotranspiration in mm
+  # input: vector of monthly water input to soil in mm
+  # awc: vector of soil water capacity in mm
+  # soil_prev: vector of soil water content for the previous month (mm).  If left NULL this is assigned to be zero.
+  #
+  # Value:
+  # returns a data frame with columns for AET, deficit, end-of-month soil moisture, and runoff.
+  
+  N <- length(et0)
+  runoff <- def <-  aet <- soil <- rep(NA,N) # 
+  if(is.null(soil_prev)) soil_prev <- rep(0,N)
+  
+  deltasoil <- input-et0 # positive=excess H2O, negative=H2O deficit
+  
+  # Case when there is a moisture surplus:
+    Case <- deltasoil>=0
+  if(sum(Case)>0){
+    aet[Case] <- et0[Case]
+    def[Case] <- 0
+    soil[Case] <- pmin(soil_prev[Case]+deltasoil[Case],awc[Case])	# increment soil moisture, but not above water holding capacity
+    runoff[Case] <- pmax(soil_prev[Case]+deltasoil[Case]-awc[Case],0) # when awc is exceeded, send the rest to runoff
+  }
+  
+  # Case where there is a moisture deficit:  soil moisture is reduced
+  Case <- deltasoil<0
+  if(sum(Case)>0){
+    soildrawdown <- soil_prev[Case]*(1-exp(-(et0-input)[Case]/awc[Case]))	# this is the net change in soil moisture (neg)
+    aet[Case] <- pmin(input[Case] + soildrawdown,et0[Case])
+    def[Case] <- et0[Case] - aet[Case]
+    soil[Case] <- soil_prev[Case]-soildrawdown
+    runoff[Case] <- 0
+  }
+  
+  return(data.frame(aet=aet,def=def,soil=soil,runoff=runoff))
+  
+}
+```
+
+Note: couldn't get the code from Dobrowski et al. to work, so here's another actual evapotraspiration function from Dan, based on this website's calculator: http://geog.uoregon.edu/envchange/software/AETcalculator.pdf. USE THIS ONE. 
+```{r}
+aetmod <- function(et0,precip,awc){
+  # This function computes AET given ET0, H2O input, soil water capacity, and beginning-of-month soil moisture
+  # Arguments:
+  # et0: vector of monthly reference evapotranspiration in mm
+  # input: vector of monthly water input to soil in mm
+  # awc: single value for soil water capacity in mm
+  #
+  # Value:
+  # returns a data frame with columns for AET, deficit, soil water content, and runoff.
+  
+  N <- length(et0)
+  runoff <- def <- aet <- soil <- rep(NA,N) 
+  w.previous <- awc  #start with at capacity
+  
+  for(i in 1:N){
+  	beta <- (w.previous/awc)/.7  ###  beta function (declining availability function)
+	if(beta>1){
+		beta <- 1
+		} else {
+		beta <- 1-exp(-6.68*w.previous/awc)
+		}
+	if(beta<0){ beta <-0 }
+  	Dd <- precip[i]-et0[i] # positive=excess H2O, negative=H2O deficit
+  	if(!is.na(Dd)){
+  		if(Dd<0){ # precip less than demand, lowered soil water, no runoff
+			soil[i] <- w.previous+beta*Dd  ### soil moisture at end of day i
+			runoff[i] <- 0
+			aet[i] <- precip[i]+(w.previous-soil[i])  # aet=precip+lowered soil water
+			def[i] <- et0[i]-aet[i]
+			}
+		if(Dd>0){  # precip more than demand, increased soil water, possibly runoff
+			soil[i] <- w.previous+Dd  ### soil moisture at end of day i
+			if(soil[i]>awc){
+				runoff[i] <- soil[i]-awc
+				soil[i] <- awc
+				} else {
+				runoff[i] <- 0
+				}
+			aet[i] <- et0[i]
+			def[i] <- 0
+			}		
+		w.previous <- soil[i]
+		} #endif
+	} # next day
+	return(data.frame(aet=aet,def=def,runoff=runoff,soil=soil))
+  }
+```
+
+This just leaves soil water capacity as the last thing that needs to be figured out (soil water capacity = difference between field capacity and permanent wilting point). Soil in the Ketapang area is, according to the FAO-UNESCO Soils Map: JD9 2/3a --> Dystric Fluvisols, medium/fine, level to undulating
+
+"Use: Dystric Fluvisols occur mainly in Sumatra, Java, Kalimantan, Irian Jaya, Sulawesi and the Moluccas. They are developed on recent fluviatile, marine and lacustrine deposits and occupy positions on river levees, present flood plains, deltas and lake shores where alluvium is derived from predominantly acid parent rocks. Their macrorelief is generally flat, although levees often have an undulating microrelief. Soils subject to deep flooding remain under mixed swamp forest. Along coasts, soils which are periodically inundated by sea water are mainly under mangrove vegetation, which is intensively used in places for charcoal making. Where flooding is not too deep, or where flood protection and drainage works have been constructed, these soils are intensively used for paddy cultivation. Levee soils are traditionally used for settlement sites with home gardens, orchards and banana plantations. The better-drained Dystric Fluvisols of northern Sumatra produce Deliwrapper tobacco, and rubber and oil palm give very high yields.
+
+Suitability. Most Dystric Fluvisols are stratified, medium to fine textured, and poorly to very poorly drained, although better-drained soils occur on levees. Soil reaction is slightly to strongly acid. Organic matter content is variable, but generally moderateto high. These soils are low in bases, but respond well to moderate applications of nitrogen and phosphate fertilizers. Water control presents the main problem for the successful utilization of these soils. A combination of irrigation during the dry season and flood protection and drainage during the rainy season is required on poorly drained soils. Where this is feasible, two crops of rice a year can be achieved, giving high yields under good management involving the use of high-yielding varieties, regular fertilizer application, and the use of insecticides and pesticides. In drier areas where irrigation water is limited, rainfed rice followed by a summer legume crop or tobacco gives satisfactory results under good management. Rubber, oil palm and sugar cane thrive where drainage is adequate. Where no drainage or flood control is required, these soils may be cultivated under a wide range of food, fruit and industrial crops with moderate applications of fertilizers. Where flood control is not feasible, recent developments in the breeding of floating rice varieties seem promising. The better-drained levee soils are generally fully utilized for settlement sites, home gardens, orchards and banana plantations." 
+--FAO UNESCO Soil Map of the World
+
+
+Also, some useful notes on evapotranspiration from the FAO: http://www.fao.org/docrep/x0490e/x0490e04.htm]]
+
+## Read in libraries and the data; initial data exploration
+
+Load libraries and create a mini-function for reading in dates. 
+```{r}
+# load libraries
+# install the package if you don't already have it
+if (!require("plyr")) {
+     install.packages("plyr")
+     library(plyr)
+}    
+
+if (!require("zoo")) {
+     install.packages("zoo")
+     library(zoo)
+}
+
+## create a mini function that makes the date of the detected fire be read in as a POSIXct date, rather than as a character or a string
+## note that because this data is from Indonesia, the day comes before the month
+setClass('ddmmyyyy_KTG')
+setAs("character","ddmmyyyy_KTG", function(from) as.Date(from, format="%d/%m/%Y",tz="UTC+7"))    # also sets the time zone; really just needed so we don't get an error because all of this data is from the same spot
+```
+
+We need to read in the climate data from Ketapang, and perform a couple of calculations to get everything into the right units and format. 
+```{r}
+# read in the Ketapang climate data
+## no data is given the value 9999 in the original data; na.strings converts indicated values to NA (which is what R uses to indicate no data) without any extra steps
+## 9999 is no data
+## 8888 is no measurable data. not sure how this is different than no data... maybe these should actually be 0?
+KTG<-read.csv("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/climate_data/KetapangClimate1986_2016 COPY.csv",header=T,sep=",",na.strings=c("9999","8888"),colClasses = c("character","factor","ddmmyyyy_KTG",rep("numeric",7),"factor","numeric","factor") )
+
+# rename the columns into english
+colnames(KTG)<-c("station","stationID","date","T_min","T_max","T_avg","humidity","precip","sunshine","wind_speed_knots","wind_dir","wind_maxgust_knots","wind_maxgust_dir")
+
+head(KTG)
+```
+
+
+We already have:
+* Maximum temperature in Celsisus;
+* Minimum temperature in Celsius; and
+* Humidity (assuming it is relative humidity).
+
+We also have:
+* Wind speed, but it needs to be converted from knots to meters per second;
+* Date, which needs to be converted to the day of the year (aka Julian date); and
+* Hours of sunshine. 
+
+We need to calcluate: 
+* Dewpoint (can be calculated from temperature); and 
+* Solar radiation (can be calcluated from the hours of sunshine).
+
+We can use some simplifications to calculate these more easily; need to check and see if these simplifications are valid. 
+
+But first, some quick data exploration. 
+```{r}
+# look at the sunshine data  
+boxplot(KTG$sunshine,main="Hours of Sunshine")
+
+# look at the temperature data  
+boxplot(KTG$T_min,main="Minimum Temperature")
+boxplot(KTG$T_max,main="Maximum Temperature")
+boxplot(KTG$T_avg,main="Average Temperature")
+
+# look at the humidity data
+boxplot(KTG$humidity,main="Relative Humidity")
+
+# precip data
+boxplot(KTG$precip,main="Daily Precipitation")
+
+# wind data
+boxplot(KTG$wind_speed_knots,main="Wind Speed")
+```
+Looks like the data is definitely not normally distributed for most of these variables, but since we're not trying to do any statistical analyses on these it shouldn't be a problem. We also need to note that there are some clear problems in the data. 
+
+## Massaging the data (dealing with NAs and other non-sensical values)
+
+There also seem to be some issues with the precipitation data--there is a LOT of probably missing data--but those are even harder to track down, so just read them in as 0 for now. 
+
+Another thing that might need to be dealt with has to do with the windspeed. Windspeed varies with height, so we need to find out the height that the measurement was taken at. There are also a lot of missing values. 
+
+Calculate a moving average that we can then use to fill in some of the missing values. This isn't the ideal approach, but we have to have some value--otherwise the AET for that day will be modeled as 0, which is even less realistic than filling it in with modeled/smoothed data. (Note that for some things, like temperature, a moving average does seem reasonable, but it makes less sense for other things, like wind and precipitation.)
+```{r}
+# first count the number of NAs in the columns to identify which need to have a moving average applied
+print(paste(sum(is.na(KTG$T_min)),"NAs in T_min"))
+print(paste(sum(is.na(KTG$T_max)),"NAs in T_max"))
+print(paste(sum(is.na(KTG$T_avg)),"NAs in T_avg"))
+print(paste(sum(is.na(KTG$humidity)),"NAs in humidity"))
+print(paste(sum(is.na(KTG$precip)),"NAs in precip"))
+print(paste(sum(is.na(KTG$sunshine)),"NAs in sunshine hours"))
+print(paste(sum(is.na(KTG$wind_speed_knots)),"NAs in wind speed"))
+# not checking for wind/gust direction because we're not using that anywhere
+```
+So, looks like we need to use the moving average for every variable of interest, though there are A LOT more missing values for wind than for any of the other measurements.
+
+So, we can use a moving average (mean) to fill in the missing values. Use rollapply() from the zoo package. Could also check out na.approx() or na.spline() in the zoo package, which could be an interesting comparison. Though, with some initial testing, it seems like it's not flexible enough? It has issues with NA values. We could also try na.aggregate() which replaces NAs with aggregated values, so we could replace NAs with something like a montly mean. This is probably not better than a moving average. Yet another option is given by na.locf() which fills in the NAs with the last non-NA value. 
+```{r}
+# make a data frame to store the rolling means in
+# also have the original data in there NEXT TO THE ROLLING MEAN so it's easier to compare the results
+KTG_rollmeans<-data.frame(matrix(nrow=length(KTG$date),ncol=1+(7*2)))    # same number of rows as original, and then 2 columns for each of the 7 variables and have a column for the date
+
+# add in the dates
+KTG_rollmeans[,1]<-KTG$date
+
+# set the window
+window<-10    
+KTG_rollmeans[,2]<-KTG$T_min
+KTG_rollmeans[,3]<-rollapply(KTG$T_min,window,FUN=mean,fill=NA,partial=1,na.rm=T)
+KTG_rollmeans[,4]<-KTG$T_max
+KTG_rollmeans[,5]<-rollapply(KTG$T_max,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
+KTG_rollmeans[,6]<-KTG$T_avg
+KTG_rollmeans[,7]<-rollapply(KTG$T_avg,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
+KTG_rollmeans[,8]<-KTG$humidity
+KTG_rollmeans[,9]<-rollapply(KTG$humidity,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
+KTG_rollmeans[,10]<-KTG$precip
+KTG_rollmeans[,11]<-rollapply(KTG$precip,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
+KTG_rollmeans[,12]<-KTG$sunshine
+KTG_rollmeans[,13]<-rollapply(KTG$sunshine,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
+KTG_rollmeans[,14]<-KTG$wind_speed_knots
+KTG_rollmeans[,15]<-rollapply(KTG$wind_speed_knots,window,FUN=mean,fill=NA,partial=1,na.rm=T) 
+
+# rename the columns
+# will be combo of original names plus noting that it's a rolling mean
+names_og<-colnames(KTG)[-(c(1,2,3,11,12,13))]     # get the original names but don't need first two columns (station name & id) or the columns with wind directions. don't need date either because we don't want to append roll mean to that
+# also not going to use wind gusts so don't include that
+names_new<-paste(names_og,"rollmean10",sep="_")   # add rolling mean to the names
+
+# now a for loop to combine the original and new names in the correct order
+names_rollmeans<-NA      # where the new names will be stored
+i<-1      # counter that keeps track of which index in the new combined names vector we are at
+
+for(col in 1:length(names_new)){   # col keeps track of index in the vectors we're pulling from 
+    names_rollmeans[i]<-names_og[col]
+    i<-i+1
+    names_rollmeans[i]<-names_new[col]
+    i<-i+1
+}
+
+# add date at the beginning
+names_rollmeans<-c("date",names_rollmeans)
+
+# now rename the columns
+colnames(KTG_rollmeans)<-names_rollmeans
+
+# print the new number of NAs (though they're acutally NaNs, not NAs, because that is what rollsum() puts out.)
+print(paste(sum(is.na(KTG_rollmeans$T_min_rollmean10)),"NAs in T_min_rollmean10"))
+print(paste(sum(is.na(KTG_rollmeans$T_max_rollmean10)),"NAs in T_max_rollmean10"))
+print(paste(sum(is.na(KTG_rollmeans$T_avg_rollmean10)),"NAs in T_avg_rollmean10"))
+print(paste(sum(is.na(KTG_rollmeans$humidity_rollmean10)),"NAs in humidity_rollmean10"))
+print(paste(sum(is.na(KTG_rollmeans$precip_rollmean10)),"NAs in precip_rollmean10"))
+print(paste(sum(is.na(KTG_rollmeans$sunshine_rollmean10)),"NAs in sunshine_rollmean10"))
+print(paste(sum(is.na(KTG_rollmeans$wind_speed_knots_rollmean10)),"NAs in windspeed_rollmean10"))
+# not checking for wind/gust direction because we're not using that anywhere
+```
+*NOTE:* There seem to be a few periods where the entire weather station must have been down, because there are no values at all for any of the measurements for those days. Even roll sum can't deal with that.... unless we use a huge window. Those time periods are: July 2000 and September 1997 (the whole months). To fill all those in the window would need to be over 30 days... and that's probably too big! So for the 20 and 21 days in the middle of the month we don't have any values (because the first and last 5 do have numbers, pulled in from the previous and following months by the roll apply function). Plus, there are several 10+day periods where no wind measurements were taken: Jan 11- 21 1991, April 2-13 1991, April 28-May 8 1991, and Nov 27-Dec 6 1992. (Also note that there are a lot of missing values on either side of those periods, too, but there is at least 1 measurement for every 10 apart from those chunks.) Weirdly, in a lot of these periods, there IS precipitation data but the values are all 0. (So maybe this isn't accurate data? Checked in the raw data and they really are 0s, not 8888/9999s.) And the 44 NAs/NaNs for precip are in 2015, not in those other long stretches--it's basically the second half of 2015, with a few days here and there where there is data so it isn't fully NaNs. Sooo...don't use those chunks of data! 
+
+
+So, there are some limitations even after filling in the missing values with moving averages... but we have to go ahead and fill in those values anyways.
+```{r}
+# now make the replacements! 
+# figured out how to do this with the toy data in /Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/code/SandboxCode/FillMissingValues.R
+KTG$T_min[is.na(KTG$T_min)]<-KTG_rollmeans$T_min_rollmean10[is.na(KTG$T_min)]
+KTG$T_max[is.na(KTG$T_max)]<-KTG_rollmeans$T_max_rollmean10[is.na(KTG$T_max)]
+KTG$T_avg[is.na(KTG$T_avg)]<-KTG_rollmeans$T_avg_rollmean10[is.na(KTG$T_avg)]
+KTG$precip[is.na(KTG$precip)]<-KTG_rollmeans$precip_rollmean10[is.na(KTG$precip)]
+KTG$humidity[is.na(KTG$humidity)]<-KTG_rollmeans$humidity_rollmean10[is.na(KTG$humidity)]
+KTG$sunshine[is.na(KTG$sunshine)]<-KTG_rollmeans$sunshine_rollmean10[is.na(KTG$sunshine)]
+KTG$wind_speed_knots[is.na(KTG$wind_speed_knots)]<-KTG_rollmeans$wind_speed_knots_rollmean10[is.na(KTG$wind_speed_knots)]
+
+# also add in a column that flags where there are NAs filled in with another value in at least one of the other columns
+KTG$flag<-NA
+KTG$flag[is.na(KTG$T_min)]<-"One or more estimated values"
+KTG$flag[is.na(KTG$T_max)]<-"One or more estimated values"
+KTG$flag[is.na(KTG$T_avg)]<-"One or more estimated values"
+KTG$flag[is.na(KTG$precip)]<-"One or more estimated values"
+KTG$flag[is.na(KTG$humidity)]<-"One or more estimated values"
+KTG$flag[is.na(KTG$sunshine)]<-"One or more estimated values"
+KTG$flag[is.na(KTG$wind_speed_knots)]<-"One or more estimated values"
+
+```
+
+
+Now check to see if we have the NAs filled in. 
+```{r}
+# check to see if the number of filled in NAs is less than before
+# (ideally it would be 0 but because of the issue noted earlier about the 10+ day stretches of no values we won't ever see 0)
+print(paste(sum(is.na(KTG$T_min)),"NAs in T_min"))
+print(paste(sum(is.na(KTG$T_max)),"NAs in T_max"))
+print(paste(sum(is.na(KTG$T_avg)),"NAs in T_avg"))
+print(paste(sum(is.na(KTG$humidity)),"NAs in humidity"))
+print(paste(sum(is.na(KTG$precip)),"NAs in precip"))
+print(paste(sum(is.na(KTG$sunshine)),"NAs in sunshine hours"))
+print(paste(sum(is.na(KTG$wind_speed_knots)),"NAs in wind speed"))
+```
+So, it's not perfect but it IS better than the original data! Might need to do something like break this into sections that start and stop before and after the big chunks of missing data.... Need to talk with Dan about that. But that shouldn't affect us until we get to the aet coalculations, since that does rely on the values from previous days. 
+
+But, we have to move ahead with all of the conversions, etc., anyways. 
+
+# Calcluate ET0
+
+For all of these calcuations, assume that: 
+* Airport location is -1.816, 109.963  (1.816 S, 109.963 E)
+* Airport elevation is 14 meters
+
+Useful constants/conversions: 
+* Windspeed in meters per second = 0.5144444 * windspeed in knots
+* 1 KWh=3.6 MJ (for radiation)  aka 1 watt-hour = 3600 joules = .0036 Mjoules
+
+One obvious problem that a moving average can't at all fix is related to the hours of sunshine. For most days the max reported amount of sun is 8 hours, but this doesn't make sense with what we know about the place, which is that there is ~12 hours of sun possible a day, and it definitely isn't always cloudy for 4 hours every day in Ketapang. Also, there is one day with 13.5 hours of sunshine (18 Oct 2016) and another with 12.5 hours of sunshine (15 Jul 2016). So it seems likely that there are some errors in the data, but we don't know if they are random or systematic (e.g., data entry or a bigger problem in how they are measuring hours of sunshine)! Looking at the raw data, it seems like the 8 hour max issue is probably something with the detector, since ~2015 the numbers start to make more sense; maybe ~2015 they got a better detector?  But, a quick solution that still allows us to use all of the data is to normalize all the sunshine data to a maximum of 8 hours. 
+
+To calculate *solar radiation*, we have information on radiation and hours of sunshine from  NASA Surface Meteorology and Solar Energy (https://eosweb.larc.nasa.gov/cgi-bin/sse/grid.cgi): 
+* The monthly averaged clear sky insolation incident on a horizontal surface (kWh/m2/day) for airport location from 22 year average is: (Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec) = (7.33,7.55,7.51,7.26,6.80,6.50,6.57,6.91,7.28,7.40,7.33,7.20)
+* The monthly averaged daylight hours for airport location from 22 year average is: (Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec) = (12.2,12.1,12.1,12.0,12.0,12.0,12.0,12.0,12.1,12.1,12.2,12.2)
+
+To calculate *dewpoint*, use simplified equation from Lawrence 2005 (may later want to use a more precise equation). This uses relative humidity (so assuming that the values in the spreadsheed are relative, not absolute!) and temperature. The equation is: dewpoint temperature = T - ((100 - relative humdiity)/5). 
+
+```{r}
+###################### Day of year
+# convert the date into the day of the year for the function
+KTG$doy<-as.numeric(strftime(KTG$date, format = "%j"))
+#head(KTG$doy)
+
+
+###################### Windspeed (in knots)
+# note that the wind speed is given in knots and it needs to be converted to m/s
+# windspeed in meters per second = 0.5144444 * windspeed in knots
+KTG$wind_speed_ms<-0.5144444*KTG$wind_speed_knots
+
+###################### Solar radiation
+# calcluate solar radiation from hours of sunshine
+###### treat 8 as the max number of hours in the day and reduce everything that is more than 8 hours down to 8
+KTG$psun<-ifelse(KTG$sunshine<8,(KTG$sunshine/8),1)
+KTG$sunshine_norm<-8*KTG$psun
+###### then to turn it into radiation
+# use the clear sky insolation, hours of daylight, and (normalized) sunshine hours to calcuate a rough radiation
+# monthly averaged clear sky insolation incident on a horizontal surface (kWh/m2/day) for airport location: (Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec)=(7.33,7.55,7.51,7.26,6.80,6.50,6.57,6.91,7.28,7.40,7.33,7.20)
+# monthly averaged daylight hours for airport location (-1.816, 109.963) from 22 year average is: (Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec)=(12.2,12.1,12.1,12.0,12.0,12.0,12.0,12.0,12.1,12.1,12.2,12.2)
+# 1 watt-hour = 3600 joules = .0036 Mjoules
+# both of these sets of values are from NASA Surface Meteorology and Solar Energy (https://eosweb.larc.nasa.gov/cgi-bin/sse/grid.cgi)
+# make a data frame with the month, insolation, and hours of daylight
+month<-seq(1,12,1)  # the month number
+insolation<-c(7.33,7.55,7.51,7.26,6.80,6.50,6.57,6.91,7.28,7.40,7.33,7.20) # the insolation values
+daylight<-c(12.2,12.1,12.1,12.0,12.0,12.0,12.0,12.0,12.1,12.1,12.2,12.2)   # the maximum daylight hours
+## note that we could also use the daylength function from the pheno package to calculate the daylight hours
+tmp<-cbind.data.frame(month,insolation,daylight)
+# pull out just the month from the dates
+KTG$month<-as.numeric(format(KTG$date,"%m"))
+#head(KTG$month)  # check to make sure it's running correctly   
+# then use "join" from the plyr package to combine the two data sets based on the month value, and also preserve the original row order
+KTG<-join(KTG,tmp,by="month")
+# last, calculate the radiation based on the percentage of total daylight hours sunshine was observed multiplied by the clear sky insolation, and then convert it to MJ (1KWh=3.6MJ)
+KTG$radiation<-(((KTG$psun)*KTG$daylight)*KTG$insolation)*3.6
+# calculates the hours of sunshine as a percentage and then converts that to what it would be if it was the real daylight hours... this is a big assumption!!!!
+
+# remove the intermediate columns we added for month, insolation, and hours of daylight
+KTG$month<-NULL
+KTG$insolation<-NULL
+KTG$daylight<-NULL
+
+###################### Latitude
+# Ketapang airport is at approximately 1.8164°S --> -1.8164
+lat<- -1.8164
+
+
+###################### Elevation
+# Ketapang airport elevation is approximately 14 meters (need to double check this)
+elev<-14
+
+###################### Dewpoint
+# calculate dewpoint using the simplification presented in Lawrence 2005 (may later want to use a more precise equation)
+# this uses relative humidity (so assuming that the values in the spreadsheed are relative, not absolute!) and temperature
+# dewpoint temperature = T - ((100 - relative humdiity)/5)
+# T is the minimum temperature (check this)
+KTG$dewpoint<-KTG$T_min-((100-KTG$humidity)/5)
+#head(KTG$dewpoint)
+```
+
+Because the aet function takes values from previous day(s) into account, cut down to only the time periods that we know are good before calculating the aet. Let's take November 2001 through February 2015. 
+
+```{r}
+KTG_00to15<-KTG[(KTG$date>=as.Date("01/11/2000", format="%d/%m/%Y",tz="UTC+7") & KTG$date<as.Date("03/01/2015", format="%d/%m/%Y",tz="UTC+7")),]
+```
+
+
+Then do the calculation for reference evapotranspiration, using both the function directly from Dobrowski et al and the one from Dan. Ideally they would come up with the same numbers and plotting them would result in a straight line. 
+
+```{r}
+# using the Dobrowski et al function calculate reference evapotranspiration
+ET0_output<-dailyET0(lat=lat,elev=elev,psun=KTG_00to15$psun,wind=KTG_00to15$wind_speed_ms,doy=KTG_00to15$doy,tmax=KTG_00to15$T_max,tmin=KTG_00to15$T_min,rh=KTG_00to15$humidity)
+
+# using Dobrowski et al version
+ET0_output_Dobrowski<-dailyET0_Dobrowski(radiation=KTG_00to15$radiation,tmax=KTG_00to15$T_max,tmin=KTG_00to15$T_min,wind=KTG_00to15$wind_speed_ms,lat=lat,elev=elev,dpt=KTG_00to15$dewpoint,doy=KTG_00to15$doy)
+     
+     
+# then compare them. 
+plot(ET0_output$et0,ET0_output_Dobrowski/10)
+# the agreement is generally pretty good though it's still off by a factor of 10, need to figure this out eventually
+```
+Clearly, there are some big differences in the assumptions made, which is putting things on different scales--seems like the Dobrowski et al. version is 10 times higher than Dan's--but other than that, the relationship is pretty linear. Seems off by a factor of ~10. Not yet sure why... but most likely due to either the radiation or the dewpoint calcluations, because those are the only different inputs (calculated inside Dan's function, but given as inputs to the Dobrowski function). 
+
+DAN SAYS TO USE HIS FUNCTION BECAUSE THE NUMBERS ARE MORE REASONABLE. 
+
+# Calcluate actual evapotranspiration (aet), deficit, etc. 
+
+Then calculate actual evapotranspiration etc. using Dan's function. 
+```{r}
+# just trying a random value for awc --> it's the average value in http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.461.1371&rep=rep1&type=pdf
+soilbalance122<-aetmod(et0=ET0_output$et0,precip=KTG_00to15$precip,awc=122)
+
+# also try some other numbers
+soilbalance50<-aetmod(et0=ET0_output$et0,precip=KTG_00to15$precip,awc=50)
+soilbalance80<-aetmod(et0=ET0_output$et0,precip=KTG_00to15$precip,awc=80)
+soilbalance100<-aetmod(et0=ET0_output$et0,precip=KTG_00to15$precip,awc=100)
+
+
+```
+
+Now, write out the data after adding in the ET0 and soil-water balance information. 
+```{r}
+# put the et0 and aet data into the data frame with all the other data
+KTG_00to15$ET0<-ET0_output$et0
+
+KTG_00to15$aet50<-soilbalance50$aet
+KTG_00to15$deficit50<-soilbalance50$def
+KTG_00to15$soil50<-soilbalance50$soil
+KTG_00to15$aet80<-soilbalance80$aet
+KTG_00to15$deficit80<-soilbalance80$def
+KTG_00to15$soil80<-soilbalance80$soil80
+KTG_00to15$aet100<-soilbalance100$aet
+KTG_00to15$deficit100<-soilbalance100$def
+KTG_00to15$soil100<-soilbalance100$soil
+KTG_00to15$aet122<-soilbalance122$aet
+KTG_00to15$deficit122<-soilbalance122$def
+KTG_00to15$soil122<-soilbalance122$soil
+
+# remove a few columns that aren't important for anythign in the future before writing out the data
+KTG_00to15$wind_maxgust_knots<-NULL
+KTG_00to15$wind_dir<-NULL
+KTG_00to15$wind_maxgust_dir<-NULL
+KTG_00to15$wind_speed_knots<-NULL
+KTG_00to15$doy<-NULL
+
+write.table(KTG_00to15,"/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/Ketapang_ET0andAET_00to15.txt",sep=",",row.names = F)
+```
+
+# Combining ET0/aet with MODIS active fire detections
+
+Okay! Now we're going to read in the new data (even though it's already in the memory) so that in future we can just start at this code chunk. 
+```{r}
+## create a mini function that makes the date of the detected fire be read in as a POSIXct date, rather than as a character or a string or a factor
+# it's been reformatted by R when it was converted to a table before so we can't use the same function
+setClass('yyyy-mm-dd')
+setAs("character","yyyy-mm-dd", function(from) as.Date(from, format="%Y-%m-%d",tz="UTC+7"))    # also sets the time zone; really just needed so we don't get an error because all of this data is from the same spot
+
+# now read in the data
+weather_00to15<-read.csv("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/Ketapang_ET0andAET_00to15.txt",header=T,colClasses = c("factor","factor","yyyy-mm-dd",rep("numeric",6),"character",rep("numeric",17)))
+
+
+# double check to make sure that this  DOES get rid of all of the big NA runs
+print(paste(sum(is.na(weather_00to15$T_min)),"NAs in T_min"))
+print(paste(sum(is.na(weather_00to15$T_max)),"NAs in T_max"))
+print(paste(sum(is.na(weather_00to15$T_avg)),"NAs in T_avg"))
+print(paste(sum(is.na(weather_00to15$humidity)),"NAs in humidity"))
+print(paste(sum(is.na(weather_00to15$precip)),"NAs in precip"))
+print(paste(sum(is.na(weather_00to15$sunshine)),"NAs in sunshine hours"))
+print(paste(sum(is.na(weather_00to15$wind_speed_ms)),"NAs in wind speed"))
+print(paste(sum(is.na(weather_00to15$ET0)),"NAs in ET0"))
+```
+So, we don't have any NA values! Yay! 
+
+Let's do some visualizing of the data. 
+```{r}
+# et0
+plot(weather_00to15$date,weather_00to15$ET0,type="p",pch=16,cex=0.25,ylab="ET0 ",xlab="Date", main="ET0 Over Time")
+
+# AET 50, 80, 100, 122 (separately)
+plot(weather_00to15$date,weather_00to15$aet50,type="p",pch=16,cex=0.25,ylab="AET = 50",xlab="Date", main="AET Over Time, AWC = 50")
+plot(weather_00to15$date,weather_00to15$aet80,type="p",pch=16,cex=0.25,ylab="AET = 80",xlab="Date", main="AET Over Time, AWC = 80")
+plot(weather_00to15$date,weather_00to15$aet100,type="p",pch=16,cex=0.25,ylab="AET = 100",xlab="Date", main="AET Over Time, AWC = 100")
+plot(weather_00to15$date,weather_00to15$aet122,type="p",pch=16,cex=0.25,ylab="AET = 122",xlab="Date", main="AET Over Time, AWC = 122")
+
+# just for fun look at ET0 vs aet
+plot(weather_00to15$ET0,weather_00to15$aet50,type="p",pch=16,cex=0.25,ylab="AET = 50",xlab="Date", main="ET0 vs. AET, AWC = 50")
+plot(weather_00to15$ET0,weather_00to15$aet80,type="p",pch=16,cex=0.25,ylab="AET = 80",xlab="Date", main="ET0 vs. AET, AWC = 80")
+plot(weather_00to15$ET0,weather_00to15$aet100,type="p",pch=16,cex=0.25,ylab="AET = 100",xlab="Date", main="ET0 vs. AET, AWC = 100")
+plot(weather_00to15$ET0,weather_00to15$aet122,type="p",pch=16,cex=0.25,ylab="AET = 122",xlab="Date", main="ET0 vs. AET, AWC = 122")
+
+
+# also plot soil deficit instead of aet
+plot(weather_00to15$date,weather_00to15$deficit50,type="p",pch=16,cex=0.25,ylab="Deficit, AWC = 50",xlab="Date", main = "Deficit over time, AWC = 50")
+plot(weather_00to15$date,weather_00to15$deficit80,type="p",pch=16,cex=0.25,ylab="Deficit, AWC = 80",xlab="Date", main = "Deficit over time, AWC = 80")
+plot(weather_00to15$date,weather_00to15$deficit100,type="p",pch=16,cex=0.25,ylab="Deficit, AWC = 100",xlab="Date", main = "Deficit over time, AWC = 100")
+plot(weather_00to15$date,weather_00to15$deficit122,type="p",pch=16,cex=0.25,ylab="Deficit, AWC = 122",xlab="Date", main = "Deficit over time, AWC = 122")
+
+```
+
+Now combine with the MODIS data. 
+
+
+Read in the necessary libraries, and some code to read in the fire detections that have already been cut down to just the area within the buffer, and make the columns be the correct class.
+```{r}
+# load libraries
+# install the package if you don't already have it
+if (!require("plyr")) {
+     install.packages("plyr")
+     library(plyr)
+     }
+
+# then the MODIS data
+fire_500km<-read.csv("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/FRP_daily_500km.txt",header=T,sep=",",colClasses =c("yyyy-mm-dd","numeric"))
+
+# rename the date column
+colnames(fire_500km)[1]<-"date"
+
+# make it match the weather data in time frame
+fire_500km_00to15<-fire_500km[(fire_500km$date>=as.Date("01/11/2000", format="%d/%m/%Y",tz="UTC+7") & fire_500km$date<as.Date("03/01/2015", format="%d/%m/%Y",tz="UTC+7")),]
+
+```
+
+Then combine the data sets. 
+```{r}
+# combine teh two data sets by the date, keeping the weather data even if there is no reported FRP for a day
+weather_fire<-join(fire_500km_00to15,weather_00to15,by="date",type="full",match="all")
+
+# if we wanted  order it by date this is how we'd do it
+ordered_weather_fire<-weather_fire[order(weather_fire$Date),]
+```
+
+Then plot things!!! 
+```{r}
+# then plot it! 
+plot(weather_fire$aet50,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+plot(weather_fire$deficit50,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+plot(weather_fire$aet80,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+plot(weather_fire$deficit80,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+plot(weather_fire$aet100,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+plot(weather_fire$deficit100,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+plot(weather_fire$aet122,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+plot(weather_fire$deficit122,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+```
+

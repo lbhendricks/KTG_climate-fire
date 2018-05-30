@@ -1,0 +1,286 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+Dan's code (see watbal.txt for original)
+
+# This script contains 4 functions used to model ET0 and water balance:
+# 3. 'dailyET0' for calculating daily reference evapotranspiration
+# 4. 'aetmod' estimates actual et, deficit, soil moisture and runoff as a function of moisture input, existing
+#   soil moisture, and soil water capacity. 
+#
+# Author: Alan Swanson 2012  -- Modified by Dan Gavin 2017 using FAO-56 Method as basis
+# Required input=min and max temp, mean RH, percent clouds, precip, wind
+###############################################################################
+
+```{r}
+library(lubridate)
+
+# Load and pretreat climate data
+ket<-read.table(file="/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/climate_data/Ketapang-Climate-1986-2016_COPY.csv",header=T,sep=",",na.strings=c("8888","9999"), colClasses=c("character","integer","character","numeric","numeric","numeric","numeric","numeric","numeric","numeric","character","numeric","numeric"))
+ket$date <- strptime(ket$date, "%d/%m/%Y")
+
+# data after 2014 seem problematic (no precip, sunshine hours changes to a new maximum)
+ket<-ket[ket$date$year<115,]
+
+lat <- -1.8
+elev <- 10
+
+# calculate 'percent sunshine' from hours radiation and daylength.  
+library(pheno)
+
+##fill in missing temperature and humidity and wind and solar data from mean value from annual estimates
+ket.a10 <- read.csv("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/climate_data/ketapang-10day.csv")  #10-day means
+ket.a10<-ket.a10[year(ket.a10$start.date)<2015,]
+t<-loess(ket.a10$tmax~yday(ket.a10$start.date),span=0.12)
+ket$tmax[is.na(ket$tmax)] <- predict(t,newdata=ket$date$yday[is.na(ket$tmax)]+1)
+t<-loess(ket.a10$tmin~yday(ket.a10$start.date),span=0.12)
+ket$tmin[is.na(ket$tmin)] <- predict(t,newdata=ket$date$yday[is.na(ket$tmin)]+1)
+t<-loess(ket.a10$tave~yday(ket.a10$start.date),span=0.12)
+ket$tave[is.na(ket$tave)] <- predict(t,newdata=ket$date$yday[is.na(ket$tave)]+1)
+t<-loess(ket.a10$humidity~yday(ket.a10$start.date),span=0.12)
+ket$humidity[is.na(ket$humidity)] <- predict(t,newdata=ket$date$yday[is.na(ket$humidity)]+1)
+t<-loess(ket.a10$wind_vel~yday(ket.a10$start.date),span=0.12)
+ket$wind_vel_mean[is.na(ket$wind_vel_mean)] <- predict(t,newdata=ket$date$yday[is.na(ket$wind_vel_mean)]+1)
+t<-loess(ket.a10$sunshine~yday(ket.a10$start.date),span=0.12)
+ket$sunshine[is.na(ket$sunshine)] <- predict(t,newdata=ket$date$yday[is.na(ket$sunshine)]+1)
+
+psun <- array(NA,length(ket$date))
+for(i in 1:length(ket$date)){
+	psun[i] <- as.numeric(ket$sunshine[i])/daylength(as.integer(ket$date$yday[i]+1),lat)$dl
+	}
+	
+# psun maxes at 0.6725 except after 2016 when values go to 0.895.  So, scale values.
+# determined that the values are generally scaled similarly; they just max at 8 hours before 2016
+#psun[ket$date$year<115] <- psun[ket$date$year<115]/0.6725
+#psun[ket$date$year>114] <- psun[ket$date$year>114]/0.6725
+psun <- psun/0.6725
+psun[psun>1] <- 1
+
+##missing precip data (3%) is changed to 0s
+ket$precip[is.na(ket$precip)] <- 0
+##convert wind from knots to m/s
+wind <- ket$wind_vel_mean*0.51444
+
+#run the function
+ket.et <- dailyET0(lat=lat,elev=elev,psun=psun,wind=wind,doy=ket$date$yday,tmax=ket$tmax,tmin=ket$tmin,rh=ket$humidity)
+#run aetmod
+ket.aet <- aetmod(et0=ket.et$et0,precip=ket$precip,awc=150)
+
+
+dailyET0 <- function(lat,elev,psun,wind,doy,tmax,tmin,rh){
+	# This is a ET0 function designed for daily inputs.  
+  
+  # Arguments:
+  # psun: vector of daily percent sunshine
+  # tmax, tmin: vectors of monthly average maximum and minimum temperatures in C, 
+  # wind: vector of monthly average wind speed in m/s, 
+  # tmean_prev: vector of mean temp for the previous month, 
+  # lat: vector of latitude in degrees 
+  # elev: vector of elevation in meters, 
+  # rh: vector of relative humidity (mean daily).
+  # tmean_prev: vector of mean temp of previous month in C
+  # albedo: scaler or vector of albedo values, 
+  # doy: scalar day of year 1-365,
+  # Value: 
+  # Returns a vector of ET0 values.
+  
+#some constants
+n_days = 1
+GSC = 0.082      # MJ/m2/min (solar constant)
+albedo = 0.23 #(hypothetical grass reference crop)
+G <- 0 # assume soil heat flux to be zero
+hw=5 # height at which wind is measured
+cp <- 1.013*10^-3 # specific heat of air
+
+# Step 1	
+  tmean <- (tmin+tmax)/2
+  lambda <- 2.501-2.361e-3*tmean # latent heat of vaporization    
+
+# Step 2: Mean daily solar radiation (Rs in units MJ/m2/day). See Step 12.  Nothing needed here.
+
+# Step 3: wind adjustment to 2m from 10m measurements
+  wind <- wind*(4.87/log(67*hw-5.42))  
+  
+# Step 10: Mean saturation vapor pressure (es)
+	es <- 0.6108*exp(tmin*17.27/(tmin+237.3))/2+0.6108*exp(tmax*17.27/(tmax+237.3))/2  # saturation vapor pressure
+# Step 4: Slope of the saturation vapor pressure vs. air temperature curve (delta)
+  	delta <- (4098 * es)/(tmean + 237.3)^2  
+
+# Step 5: Atmospheric Pressure (P)
+	P <- 101.3*((293-0.0065*elev)/293)^5.26  # Barometric pressure in kPa
+
+# Step 6: Psychrometric constant (gamma)
+	gmma <- cp*P/(0.622*lambda) # Psychrometer constant (kPa C-1)
+
+#Step 7: Delta Term (dt) (auxiliary calculation for Radiation Term)
+	dt <- delta/(delta+gmma*(1+0.34*wind))
+
+# Step 8: Psi Term (pt) auxiliary calculation for Wind Term.
+	pt <- gmma/(delta+gmma*(1+0.34*wind))
+	
+# Step 9: Temperature Term (auxiliary calculation for Wind Term)
+	tt <- (900/(tmean+273))*wind
+
+# Step 11: actual vapor pressure (ea)
+	ea <- (rh/100)*(0.6108*exp(tmin*17.27/(tmin+237.3))+0.6108*exp(tmax*17.27/(tmax+237.3)))/2
+	vpd <- es - ea
+	vpd[vpd<0] <- 0    
+
+# Step 12: The inverse relative distance Earth-Sun (dr) and solar declination (delt)
+	# Calculate potential max solar radiation or clear sky radiation.
+	dr <- 1+0.033*cos(2*pi/365*doy)      
+	delt <- 0.409*sin(2*pi/365*doy-1.39)
+
+# Step 13: Convert latitude to radians (phi)
+	phi <- pi*lat/180 
+
+# Step 14: Sunset hour angle (ws)
+	omegas <- acos(-tan(phi)*tan(delt))
+
+# Step 15: Daily extraterrestrial radiation (Ra)
+	Ra <- 24*60/pi*GSC*dr*(omegas*sin(phi)*sin(delt) +cos(phi)*cos(delt)*sin(omegas))
+
+# Step 16: Clear sky solar radiation (Rso). Rs is fraction of Rso
+	Rso <- Ra*(0.75+2e-5*elev)     #For a cloudless day, Rs is roughly 75% of extraterrestrial radiation (Ra)
+	# radfraction is a measure of relative shortwave radiation, needs to be less than 1
+	radfraction <- psun
+	radfraction[radfraction>1] <- 1
+	Rs<-Rso*radfraction
+
+# Step 17: Net solar or net shortwave radiation (Rns).  
+	Rns  <- (1-albedo)*Rs
+
+# Step 18: Net outgoing longwave solar radiation (Rnl)
+	Rnl <- 4.903e-9*n_days*((tmax+273.15)^4+(tmin+273.15)^4)/2*(.34-.14*sqrt(ea))*(1.35*radfraction-.35)     
+
+# Step 19: Net radiation (Rn)
+	Rn <- Rns*n_days-Rnl     
+
+# Final step
+# Radiation term.  (0.408*Rn) is net radiation expressed in equivalent of evaporation (mm)	
+	ETrad <- dt*0.408*Rn
+# Wind term (ETwind)	
+	ETwind <- pt * tt*(es-ea)
+
+et0 <- ETwind + ETrad
+
+return(data.frame(ETwind=ETwind,ETrad=ETrad,et0=et0))
+}
+
+
+aetmod <- function(et0,precip,awc){
+  # This function computes AET given ET0, H2O input, soil water capacity, and beginning-of-month soil moisture
+  # Arguments:
+  # et0: vector of monthly reference evapotranspiration in mm
+  # input: vector of monthly water input to soil in mm
+  # awc: single value for soil water capacity in mm
+  #
+  # Value:
+  # returns a data frame with columns for AET, deficit, soil water content, and runoff.
+  N <- length(et0)
+  runoff <- def <- aet <- soil <- rep(NA,N) 
+  w.previous <- awc  #start with at capacity
+  
+  for(i in 1:N){
+  	beta <- (w.previous/awc)/.7  ###  beta function (declining availability function)
+	if(beta>1){
+		beta <- 1
+		} else {
+		beta <- 1-exp(-6.68*w.previous/awc)
+		}
+	if(beta<0){ beta <-0 }
+  	Dd <- precip[i]-et0[i] # positive=excess H2O, negative=H2O deficit
+  	if(!is.na(Dd)){
+  		if(Dd<0){ # precip less than demand, lowered soil water, no runoff
+			soil[i] <- w.previous+beta*Dd  ### soil moisture at end of day i
+			runoff[i] <- 0
+			aet[i] <- precip[i]+(w.previous-soil[i])  # aet=precip+lowered soil water
+			def[i] <- et0[i]-aet[i]
+			}
+		if(Dd>0){  # precip more than demand, increased soil water, possibly runoff
+			soil[i] <- w.previous+Dd  ### soil moisture at end of day i
+			if(soil[i]>awc){
+				runoff[i] <- soil[i]-awc
+				soil[i] <- awc
+				} else {
+				runoff[i] <- 0
+				}
+			aet[i] <- et0[i]
+			def[i] <- 0
+			}		
+		w.previous <- soil[i]
+		} #endif
+	} # next day
+	return(data.frame(aet=aet,def=def,runoff=runoff,soil=soil))
+  }
+		
+        w.previous <- soil[i]
+
+        aet[i] <- Dd*beta
+        }
+				Md_sum <- Md_sum+Md
+				S_sum <- S_sum+Surp
+				Ps_sum <- Ps_sum+Ps
+				Pr_sum <- Pr_sum+Pr
+				}  ### next day
+  
+  
+  
+  
+  
+  # Case when there is a moisture surplus:
+  Case <- deltasoil>=0
+  if(sum(Case)>0){
+    aet[Case] <- et0[Case]
+    def[Case] <- 0
+    soil[Case] <- pmin(soil_prev[Case]+deltasoil[Case],awc[Case])	# increment soil moisture, but not above water holding capacity
+    runoff[Case] <- pmax(soil_prev[Case]+deltasoil[Case]-awc[Case],0) # when awc is exceeded, send the rest to runoff
+  }
+  
+  # Case where there is a moisture deficit:  soil moisture is reduced
+  Case <- deltasoil<0
+  if(sum(Case)>0){
+    soildrawdown <- soil_prev[Case]*(1-exp(-(et0-input)[Case]/awc[Case]))	# this is the net change in soil moisture (neg)
+    aet[Case] <- pmin(input[Case] + soildrawdown,et0[Case])
+    def[Case] <- et0[Case] - aet[Case]
+    soil[Case] <- soil_prev[Case]-soildrawdown
+    runoff[Case] <- 0
+  }
+  
+  return(data.frame(aet=aet,def=def,runoff=runoff))
+  
+}
+
+
+
+
+#not using this since application to tropical regions.
+  # stomatal conductance adjustment for low temperatures
+  	sr=100 # stomatal resistance sec/m
+	ks_min=.01 # minimum value for temps below T1
+	Tl=-10       # minimum temp (sc goes to ks_min below this temp)
+	T0=5		# optimal temp
+	Th=100     # maximum temp (sc goes to zero above this)
+	thresh=5   # temperature threshold below which to apply Jarvis equation (ks=1 above this temp)
+	b4=(Th-T0)/(Th-Tl)  # from Jarvis 1978
+	b3=1/((T0-Tl)*(Th-T0)^b4)
+	ks=pmax(pmin(b3*(tmean-Tl)*(Th-tmean)^b4,1),ks_min)
+	ks[is.na(ks)] <- ks_min
+	ks[tmean>=thresh] <- 1
+		
+	# convert to stomatal resistance.
+	sr <- sr/ks
+		
+	# ra is aerodynamic resistance, rs is bulk surface resistance
+	ra <- 208/wind # 
+	rs <- sr/(0.5*24*0.12) # value of 70 when sr=100
+	  
+	pa <- P/(1.01*(tmean+273)*0.287) # mean air density at constant pressure
+
+	# ET from long-form P-M eqn.
+	et0 <- .408*((delta*(netrad-G))+(pa*cp*vpd/ra*3600*24*n_days))/(delta+gamma*(1+rs/ra))
+	return(et0)
+} 
+
+```

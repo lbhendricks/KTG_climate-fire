@@ -1,0 +1,110 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+Read in libraries. Make function to make data read in better. 
+```{r}
+# the libraries
+library(sp)
+library(GISTools)
+library(rgdal)
+library(plyr)
+
+# the mini function to read in dates in the format we want
+setClass('yyyymmdd')
+setAs("character","yyyymmdd", function(from) as.Date(from, format="%Y-%m-%d"))
+```
+
+We've already identified "clusters" (things with the same latitude and longitude) in the "UniqueDetections" code. Here, read in that data and work on figuring out what is a duplicate and what isn't. 
+```{r}
+# read in the data
+detections_500km<-read.csv(file="/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/mcd14ml_KTG_500km_DupsClusterID.txt",row.names=1)     # row.names=1 tells the function that the row names are in the first column (the row names are just the number from when it was written in, but now it's too late to get them out)
+
+detections_500km$YYYYMMDD<-as.Date(detections_500km$YYYYMMDD,format="%Y-%m-%d")
+
+# then make the data spatial
+detections_500km_sp<-SpatialPointsDataFrame(cbind(detections_500km$lon,detections_500km$lat),detections_500km,proj4string = CRS("+proj=longlat +ellps=WGS84"))
+                                          
+# project the data                                          
+detections_500km_sp_proj<-spTransform(detections_500km_sp,"+proj=utm +zone=49 +south +a=6378160 +b=6356774.50408554 +units=m +no_defs")
+```
+
+To make this run faster while we're just testing things out, subset down to a smaller radius around Ketapang. First, make a shapefile with the Ketapang airport (KTG)
+```{r}
+# create a shapefile with the coordinates of KTG
+KTG<-cbind(109.9619,-1.8166)
+KTG.sp<-SpatialPoints(KTG,proj4string = CRS("+proj=longlat +ellps=WGS84"),bbox=NULL)
+KTG.sp_proj<-spTransform(KTG.sp,"+proj=utm +zone=49 +south +a=6378160 +b=6356774.50408554 +units=m +no_defs")
+```
+
+Now, make some buffers. Remember that gBuffer needs projected data! Also that the units of this projection are meters. 
+```{r}
+# buffers of varying distances. projection units are in meters! 
+KTG_buffer5km<-gBuffer(KTG.sp_proj,width=5000,byid=FALSE)
+KTG_buffer50km<-gBuffer(KTG.sp_proj,width=50000,byid=FALSE)
+KTG_buffer250km<-gBuffer(KTG.sp_proj,width=250000,byid=FALSE)
+
+# then plot all of the buffers to make sure that it all works
+plot(KTG_buffer250km,col="blue")
+plot(KTG_buffer50km,add=T,col="green")
+plot(KTG.sp_proj,pch=17,add=T)
+
+# cut out only the things in the buffer
+detections_250km_c<-detections_500km_sp_proj[KTG_buffer250km,]
+detections_50km_c<-detections_500km_sp_proj[KTG_buffer50km,]
+detections_5km_c<-detections_500km_sp_proj[KTG_buffer5km,]
+
+# then get just the data frames
+detections_250km<-as.data.frame(detections_250km_c)
+detections_50km<-as.data.frame(detections_50km_c)
+detections_5km<-as.data.frame(detections_5km_c)
+```
+
+Remove the spatial data because we don't need it anymore. 
+```{r}
+rm(detections_500km_sp)
+rm(detections_500km_sp_proj)
+rm(detections_250km_c)
+rm(detections_50km_c)
+```
+
+Now, play with the 50km radius data, because that's only ~8000 records. 
+```{r}
+length(unique(detections_50km$CLUSTER_ID))
+# there are 7478 unique fires; so there are 462 duplicates
+```
+```{r}
+# use count (from the plyr package) to see how many ignitions there are on a given day
+ignitions_byday<-count(detections_50km,vars="YYYYMMDD")
+# REMEMBER THAT WE HAVEN'T REMOVED DUPLICATES YET!!!!!!!
+# this runs pretty quickly!!! 
+
+# look at this graphically
+plot(t$YYYYMMDD,t$freq,type="l")
+
+# start to work on how to figure out the diplicates
+ignitions_bycluster<-count(detections_50km,vars="CLUSTER_ID")
+
+# join the data
+detections_50km_joined<-join(detections_50km,ignitions_bycluster,by="CLUSTER_ID",type="left",match="all")
+
+# subset out entries that are totally unique (frequency = 1, so no duplicate lat/longs)
+detections_50km_nodups<-detections_50km_joined[detections_50km_joined$freq==1,]
+
+# then subset out the entries that are duplicates
+detections_50km_dups<-detections_50km_joined[detections_50km_joined$freq>1,]
+
+```
+
+Try getting a total FRP per day (there are 795 days in this record)
+```{r}
+# first for the 5km data set
+FRP_byday_5km<-aggregate(detections_5km$FRP,by=list(detections_5km$YYYYMMDD),sum)
+colnames(FRP_byday_5km)<-c("Date","Total_FRP")
+
+# then for the 50 km data set
+FRP_byday_50km<-aggregate(detections_50km$FRP,by=list(detections_50km$YYYYMMDD),sum)
+colnames(FRP_byday_50km)<-c("Date","Total_FRP")
+
+```
+

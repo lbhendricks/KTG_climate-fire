@@ -1,0 +1,58 @@
+---
+title: "Combining AET and MODIS Data"
+output: html_notebook
+---
+
+Read in the necessary libraries, and some code to read in the fire detections that have already been cut down to just the area within the buffer, and make the columns be the correct class.
+```{r}
+# load libraries
+# install the package if you don't already have it
+if (!require("plyr")) {
+     install.packages("plyr")
+     library(plyr)
+     }
+
+## create a mini function that makes the date of the detected fire be read in as a POSIXct date, rather than as a character or a string
+setClass('yyyymmdd')
+setAs("character","yyyymmdd", function(from) as.Date(from, format="%Y%m%d"))
+
+setClass('yyyy-mm-dd')
+setAs("character","yyyy-mm-dd", function(from) as.Date(from, format="%Y-%m-%d"))
+```
+
+Read in the data. 
+```{r}
+# first the AET data
+
+# now read in the data
+KTG<-read.csv("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/Ketapang_ET0andAET.txt",header=T,colClasses = c("factor","factor","yyyy-mm-dd",rep("numeric",6),"character",rep("numeric",9)))
+
+# and because we're eventually going to be pairing this with the MODIS data, match its period of record--November 2000 on
+# also realize that this takes care of all of the big chunks of NAs!!!!
+KTG_2000<-KTG[KTG$date>=as.Date("01/11/2000", format="%d/%m/%Y",tz="UTC+7"),]
+
+# rename the date column so it matches the fire data
+colnames(KTG_2000)[3]<-"Date"
+
+# then the MODIS data
+fire_500km<-read.csv("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/FRP_daily_500km.txt",header=T,sep=",",colClasses =c("yyyy-mm-dd","numeric") )
+```
+
+Then combine the data sets. 
+```{r}
+# combine teh two data sets by the date, keeping the weather data even if there is no reported FRP for a day
+weather_fire<-join(fire_500km,KTG_2000,by="Date",type="full",match="all")
+
+# if we wanted  order it by date this is how we'd do it
+ordered_weather_fire<-weather_fire[order(weather_fire$Date),]
+
+# then plot it! 
+plot(weather_fire$aet,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+plot(weather_fire$deficit,weather_fire$Total_FRP,type="p",pch=16,cex=0.5)
+
+
+# doesn't actually make any real difference
+# but this makes sense, right? when the AET is low (eg DROUGHT type conditions) then there is more fire
+
+```
+

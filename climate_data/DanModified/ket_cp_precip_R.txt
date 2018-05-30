@@ -1,0 +1,20 @@
+#precip comparison CP vs Ketapang
+
+
+setwd("/Users/dangavin/Dropbox/Projects/Indonesia/climate_data")
+
+ket<-read.table(file="precip_CP.csv",header=T,sep=",",na.strings=c("8888","9999"), colClasses=c("character","integer","character","numeric","numeric","numeric","numeric","numeric","numeric","numeric","character","numeric","numeric","numeric"))
+
+ket$date <- strptime(ket$date, "%d/%m/%Y")
+
+date.1<-ket$date[1:1482]
+precip.1<-ket$precip[1:1482]
+precip.cp<-ket$precip_CP[1:1482]
+
+
+plot(date.1,precip.1,type="l",ylim=c(0,190))
+lines(date.1,precip.cp,col=2)
+
+library(zoo)
+plot(date.1[20:1482],rollapply(precip.1,20,sum,na.rm=T),type="l")
+lines(date.1[20:1482],rollapply(precip.cp,20,sum,na.rm=T),type="l",col=2)

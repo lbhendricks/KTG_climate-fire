@@ -1,0 +1,117 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+Some code to read in the fire detections that have already been cut down to just the area within the buffer, and make the columns be the correct class.
+```{r}
+## create a mini function that makes the date of the detected fire be read in as a POSIXct date, rather than as a character or a string
+setClass('yyyymmdd')
+setAs("character","yyyymmdd", function(from) as.Date(from, format="%Y%m%d"))
+
+## using POSIXct would work too, though this incorporates time zones (which could be good or bad!)
+# setClass('yyyymmdd')
+# setAs("character","yyyymmdd", function(from) as.POSIXct(from, format="%Y%m%d"))
+
+
+# read in the data
+detections_500km<-read.table("/Users/laurenhendricks/Documents/Borneo/Ketapang_ClimateFire/mcd14ml_KTG_500km.txt",sep=" ",header = T,colClasses = c("yyyymmdd","character","factor","numeric","numeric","numeric","numeric","integer","numeric","integer","factor"))
+
+# pull out only the year. Note that this way of doing it gets teh year as a character (so it's no longer a real date) but this makes it possible for use to make a better histogram
+detections_500km$year<-format(detections_500km$YYYYMMDD,"%Y")
+
+# doing it this way instead of using the histogram function to make slightly prettier barplot
+#barplot(table(detections_500km$year),main="Number of Fire Detections: 500 km",xlab="Year",ylab="",las=2)
+```
+
+Figure out how to detect duplicate detections, based on latitude and longitude of the detection. 
+```{r}
+# tells you how many unique detections there are
+length(unique(detections_500km$lat))    # 5929 -- ~15% of total
+length(unique(detections_500km$lon))    # 7678 -- ~20% of total
+
+# but it isn't helpful to only have lat OR long, you really have to have both (because things could have the same lat but different longs)
+detections_500km_nodups<-detections_500km[which(duplicated(detections_500km[,c('lat','lon')])==F),]
+```
+
+Subset out a smaller data frame to play with
+```{r}
+test<-detections_500km[detections_500km$dups==T,]
+test2<-detections_500km[300:400,]
+test2$dups2<-duplicated(test2[,c('lat','lon')])
+```
+
+THIS WAY DIDN'T WORK (yet...)
+```{r}
+# original example
+vector <- c("a", "b", "c","c","c","c")
+vector[duplicated(vector)]
+unique(vector[ duplicated(vector)])
+vector %in% unique(vector[ duplicated(vector)]) 
+
+# trying to modify to run with multiple columns
+vec <- cbind(c("a", "b", "c","c","c","c"),c("e","f","e","e","g","e"),as.numeric(1:6))
+vec<-as.data.frame(vec)
+colnames(vec)<-c("col1","col2","col3")
+
+print(vec)
+
+duplicated(vec[,1:2])    # tells you which rows are duplicates
+vec[duplicated(vec[,1:2]),]   # subsets out only the duplicate rows (where duplicated returned TRUE)
+unique(vec[duplicated(vec[,1:2]),])     # removes the duplicates
+vec[,1:2] %in% unique(vec[duplicated(vec[,1:2]),])
+
+unique(test2[duplicated(test2[,4:5])])
+
+## couldnt' quite get this to work with the multiple columns.                  
+```
+
+Another approach to finding the duplicates....
+```{r}
+# original example
+idx <- duplicated(df) | duplicated(df, fromLast = TRUE)
+df[idx, ]
+
+# some sample data to expand out to multiple columns
+df <- cbind(c("a", "b", "c","c","c","c"),c("e","f","e","e","g","e"),as.numeric(1:6))
+df<-as.data.frame(df)
+colnames(df)<-c("col1","col2","col3")
+
+idx<-duplicated(df[,1:2]) | duplicated(df[,1:2],fromLast = T)
+df[idx, ]
+
+
+
+# test with my data
+test2$x<-duplicated(test2[,c('lat','lon')]) | duplicated(test2[,c('lat','lon')],fromLast = T)
+idx<-test2$x<-duplicated(test2[,c('lat','lon')]) | duplicated(test2[,c('lat','lon')],fromLast = T)
+
+```
+
+This seems like maybe a beter option, because it gives an unique ID to each group of things with identical values.
+```{r}
+## here's the sample code (see https://stackoverflow.com/questions/13566562/add-id-column-by-group)
+# d <- transform(test2, Cluster_ID = as.numeric(interaction(lat, lon, drop=TRUE))
+## them modifying it to work in an example with more than one varible to detect uniques on               
+# e<-transform(test2,CLUSTER_ID=as.numeric(interaction(test2$lat,test2$lon, drop=T)))               
+#                
+# now try it with full data set
+detections_500km_IDs<-transform(detections_500km,CLUSTER_ID=as.numeric(interaction(detections_500km$lat,detections_500km$lon, drop=T)))
+# works but takes a long time
+
+# how many unique clusters are there? count the number of unique values
+print(paste(length(unique(detections_500km_IDs$CLUSTER_ID)),"unique clusters"))
+
+# subset out 
+```
+
+Questions: If we're going to be deleting duplicates, which days values would we use for things like fire radiative power? 
+Do we only care about the date of ignition? Do we at all care about how long there was something being detected there for? 
+
+
+From MODIS Active Fire Products Collection 6 guide:   
+*8.7.3 Are persistent hot spots filtered out of the fire location product?*
+No. Unlike the CMG fire product, static, persistent hot spots are not removed from the MCD14ML product. For Collection 6, you can use the new type attribute to identify such fire pixels in the MCD14ML product.
+
+*8.3.9 I want to estimate burned area using active fire data. What effective area burned should I assume for each fire pixel?*
+Pulling this off to an acceptable degree of accuracy is generally not possible due to nontrivial spatial and temporal sampling issues. For some applications, however, acceptable accuracy can be achieved, although the effective area burned per fire pixel is not simply a constant, but rather varies with respect to several different vegetation- and fire-related variables. See Giglio et al. (2006b) for more information.
+
