@@ -1,3 +1,4 @@
-# KTG_climate-fire
+# Climate-Fire Interactions in Ketapang, West Kalimantan, Indonesia
 
-Code for project analyzing climate data from Ketapang (West Kalimantan, Indonesia) airport and MODIS fire detectiosn
+This project combines weather data from the airport in Ketapang (West Kalimantan, Indonesia) with MODIS fire detections. 
+
